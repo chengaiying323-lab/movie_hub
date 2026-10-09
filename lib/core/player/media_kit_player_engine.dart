@@ -263,9 +263,20 @@ class MediaKitPlayerEngine implements PlayerEngine {
     await Future.wait(_subs.map((s) => s.cancel()));
     _subs.clear();
 
-    // 先释放渲染面再释放播放器：VideoController 持有 Player 的原生句柄，
-    // 反序释放会触发 mpv 侧对已销毁纹理的写入。
-    await _controller.dispose();
+    // 只释放 Player。**不要**对 `_controller` 调 dispose() ——
+    // media_kit_video 1.2.5 的 `VideoController`
+    // （`video_controller.dart:56`）根本没有这个方法，写了直接编译失败：
+    //   The method 'dispose' isn't defined for the class 'VideoController'.
+    //
+    // 渲染面不需要我们手动收尾：它自己把自己注册进了 Player 的释放链
+    // （`native_video_controller/real.dart:88-89` 的
+    // `player.platform?.release.add(controller._dispose)`），
+    // 而 `Player.dispose()` 会逐个 await 这些回调。
+    //
+    // 原先的写法还有个更隐蔽的害处：`_controller.dispose()` 抛错后，
+    // 紧随其后的 `_player.dispose()` **永远执行不到** —— 播放器句柄、
+    // libmpv 上下文与视频纹理一起泄漏。
+    // 完整证据链见 docs/BUILD_AND_RELEASE.md §6「云端」故障表。
     await _player.dispose();
     _state.dispose();
   }

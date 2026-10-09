@@ -833,8 +833,9 @@ entitlements。有三类 entitlement 在 iOS 15 / A12+ 上被禁用，带上会*
 | Dart 编译：`A constant constructor can't call a non-constant super constructor`（`TypeAdapter` / `ChangeNotifier` / `Notifier` 等基类） | 这些三方基类**没有声明构造器**，隐式默认构造器就**不是** const（隐式构造器只有类里显式写了 `const` 才是 const）。所以子类也不能写 `const XxxAdapter()`。改成普通构造器，**并连同调用点一起去掉 `const`**（`Hive.registerAdapter(const XxxAdapter())` 同样要改）。判断依据：去 `~/.pub-cache`（或 `.dart_tool/package_config.json` 指向的目录）打开该基类源码，看有没有 `const` 构造器 —— 别猜 |
 | Dart 编译：`Duration used in 'for' loop` | `media_kit` 的 `PlayerStream.buffer` 类型是 **`Stream<Duration>`**（1.2.6 `lib/src/models/player_stream.dart:53`，注释原文 *Current buffer position. … how much of the stream has been decoded & cached by the demuxer*），它是**单点位置**不是区间列表。直接 `streams.buffer.listen((buffered) => _emit(buffered: buffered))` 即可，不能遍历 |
 | Dart 编译：`The method 'setProperty' isn't defined for the class 'Player'` | media_kit 的 `Player` **确实没有** `setProperty`；它是 **`NativePlayer`** 的公开成员（1.2.6 `lib/src/player/native/player/real.dart:1223`，签名 `Future<void> setProperty(String property, String value, {bool waitForInitialization = true})`）。而 `Player.platform` 是 **public 可空**的 `PlatformPlayer?`（`player.dart:125`），`NativePlayer` 又经 `media_kit.dart → native/player/player.dart → real.dart` 导出。所以正确写法是 `final p = player.platform; if (p is NativePlayer) await p.setProperty(...);`。**用 `is` 不要用 `as`**：Web 端该字段是 `WebPlayer`，`as` 会抛 `TypeError`。另外 `demuxer-max-bytes` 虽可由 `PlayerConfiguration.bufferSize` 覆盖，但该字段会把**前向与回退缓冲灌成同一个值**（`real.dart:2425-2426`），表达不了 64MiB / 16MiB 的差异 |
+| Dart 编译：`The method 'dispose' isn't defined for the class 'VideoController'` | `media_kit_video` 的 `VideoController` **没有** `dispose()`。它的公开成员只有 `player` / `platform` / `notifier` / `id` / `rect` 五个字段，加 `setSize({width, height})` 与 `waitUntilFirstFrameRendered`（1.2.5 `lib/src/video_controller/video_controller.dart:56-161`）。**删掉那行即可，只留 `await player.dispose()`**。原因是渲染面自己就把自己注册进了 Player 的释放链：`native_video_controller/real.dart:88-89` 写着 `// Register [_dispose] for execution upon [Player.dispose].` ＋ `player.platform?.release.add(controller._dispose);`，而 `Player.dispose()`（media_kit 1.2.6 `player.dart:137-138`）会逐个 `await` 这些回调（`platform_player.dart:151-159`，各自 `try/catch` 兜住）；同一链上还有监听摘除（`video_controller.dart:115-119`，注释 *Remove listeners upon [Player.dispose]*）。⚠️ **附带害处**：那行一旦抛错，紧随其后的 `player.dispose()` 就永远执行不到 → 播放器句柄 / libmpv 上下文 / 视频纹理一起泄漏 |
 | Dart 编译：`Too many positional arguments`（形如 `_matches(x, 'a', 'b', 'c', 'd', 'e')`） | 可选位置参数 `[String? b, String? c, String? d]` 的个数**不是**"至少能收几个"而是"最多收几个"，调用方多传一个就是编译错误。分组关键词数量不一致时（3~5 个），签名就该改成 `List<String> needles`，从根上免疫这类错误 |
-| Dart 编译：`A value of type 'bool?' can't be assigned to a variable of type 'bool'` | 先分清是哪一种：① 参数本身就是 `bool?`（可选命名参数没给默认值）→ 用 `?? false` 兜底；② 值来自 Provider / 返回值 → **不要就地盲目 `?? false`**：若上游声明是**非空**类型，`?? false` 是死代码，分析器会报 `dead_null_aware_expression`。稳妥写法是抽一个 `bool _resolveFlag(bool? override, bool? fallback) => override ?? fallback ?? false;` —— 形参声明成可空后，上游无论可空与否这段代码都成立且无告警 |
+| Dart 编译：`A value of type 'bool?' can't be assigned to a variable of type 'bool'` | 先分清是哪一种：① 参数本身就是 `bool?`（可选命名参数没给默认值）→ 用 `?? false` 兜底；② 值来自 Provider / 返回值 → **不要就地盲目 `?? false`**：若上游声明是**非空**类型，`?? false` 是死代码，分析器会报 `dead_null_aware_expression`。稳妥写法是抽一个 `bool _resolveFlag(bool? explicitValue, bool? fallback) => explicitValue ?? fallback ?? false;` —— 形参声明成可空后，上游无论可空与否这段代码都成立且无告警 |
 | 报 `ios/Podfile 文件不存在` 或 `pod install` 找不到 Podfile | 补丁脚本本应在缺失时自动生成（见 [§1.3](#13-ios-工程补丁同样在云端跑含补出-podfile)）。看「应用 iOS 工程补丁」步骤日志里 `Podfile：` 那段自检输出定位 |
 | `pod install` 报 `Platform :ios, '12.0'` 或部署版本冲突 | Podfile 用了 Flutter 默认模板、没走到我们的补丁。确认工作流里「应用 iOS 工程补丁」在 `pod install` **之前** |
 | `No such module 'Flutter'` | Flutter 版本 < 3.24.4 配 Xcode 16。把 `flutter-version` 改到 3.24.4+ |
@@ -859,7 +860,7 @@ CI 的 Dart 编译器（CFE）那里才暴露出来。
 所以**每次 push 前**，下面 5 条必须跑一遍。它们的共同特征是：
 全部是"能靠搜索发现、不该靠编译器发现"的低级错误。
 
-### 6.1.2 五条必查项
+### 6.1.2 六条必查项
 
 ```bash
 # ① 是否有对非 Iterable 做 for-in（Duration / DateTime / int / enum 值 …）
@@ -877,6 +878,12 @@ grep -rn "^\s*static bool .*\[String" lib/
 
 # ⑤ 对 Duration / DateTime 误用集合方法（.map / .forEach / .where / .toList …）
 grep -rn "duration\.\(map\|forEach\|where\|toList\|first\|last\)" lib/
+
+# ⑥ 所有 .dispose() 调用的目标**是否真有** dispose（三方对象最容易踩）
+#    逐个确认类型：Flutter 的 TextEditingController / FocusNode / ScrollController /
+#    PageController / AnimationController / TabController 都有；
+#    但 media_kit 的 VideoController **没有**（见 §6 故障表）
+grep -rn "\.dispose()" lib/
 ```
 
 ### 6.1.3 核对三方 API：**按确切版本读源码，禁止凭记忆**
@@ -902,7 +909,7 @@ grep -rn "setProperty\|class PlayerConfiguration" pkg/lib/
 | 包 | 解析版本 | 结论 |
 |---|---|---|
 | `media_kit` | 1.2.6 | `Player` **无** `setProperty`；`NativePlayer.setProperty(String, String, {bool waitForInitialization = true})` 存在且公开；`Player.platform` 是 public 可空 `PlatformPlayer?`；`PlayerStream.buffer` 是 `Stream<Duration>`；`PlayerConfiguration` 字段为 `vo/osc/pitch/title/ready/muted/async/libass/libassAndroidFont/libassAndroidFontName/logLevel/bufferSize/protocolWhitelist` |
-| `media_kit_video` | 1.2.5 | `VideoControllerConfiguration` 为 `const` 构造，字段 `vo/hwdec/width/height/scale/enableHardwareAcceleration/androidAttachSurfaceAfterVideoParameters` |
+| `media_kit_video` | 1.2.5 | `VideoControllerConfiguration` 为 `const` 构造，字段 `vo/hwdec/width/height/scale/enableHardwareAcceleration/androidAttachSurfaceAfterVideoParameters`。**`VideoController` 没有 `dispose()`**（公开成员仅 `player/platform/notifier/id/rect` + `setSize` + `waitUntilFirstFrameRendered`）；释放责任在 `Player.dispose()`（渲染面经 `native_video_controller/real.dart:88-89` 自注册到 `player.platform?.release` 链上） |
 | `hive` | 2.2.3 | `TypeAdapter<T>` **未声明构造器** ⇒ 隐式默认构造器非 const ⇒ 子类不能写 const 构造器；`BinaryReader.readMap()` 返回 `Map`，与 `WatchRecord.fromMap(Map<dynamic, dynamic>)` 吻合 |
 | `dio` | 5.11.1 | `DioExceptionType` 含 `transformTimeout`（故 `switch` 必须带 `default:`）；`DioException` 命名参数为 `requestOptions`(required)/`response`/`type`/`error`/`stackTrace`/`message`；`BaseOptions` 与 `Options` 的字段均已核对 |
 | `window_manager` | 0.3.9 | `WindowOptions` 是 `const` 构造，含 `size/center/minimumSize/maximumSize/alwaysOnTop/fullScreen/backgroundColor/skipTaskbar/title/titleBarStyle/windowButtonVisibility`；`waitUntilReadyToShow([WindowOptions?, VoidCallback?])` |
