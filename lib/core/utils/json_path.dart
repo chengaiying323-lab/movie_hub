@@ -117,7 +117,14 @@ class JsonPath {
     return double.tryParse(value.toString().trim());
   }
 
-  static bool boolOrNull(Object? root, String? path) {
+  /// 读取布尔值；**无法判定时返回 null**（而不是 false）。
+  ///
+  /// 返回类型必须是 `bool?`：方法名就是 `boolOrNull`，而且下面「既不是布尔、
+  /// 也不在可识别的真假词表里」这一支只能表达为 null。写成非空的 `bool`
+  /// 会让那两处 `return null` 直接编译不过。
+  /// 之所以不改成返回 false：那会把「字段缺失 / 格式不认识」和「明确为假」
+  /// 混成同一种结果，调用方再也分不清。
+  static bool? boolOrNull(Object? root, String? path) {
     final value = read(root, path);
     if (value == null) return null;
     if (value is bool) return value;

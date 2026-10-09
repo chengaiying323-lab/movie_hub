@@ -15,7 +15,14 @@ class PlayerSpeedMenu {
   const PlayerSpeedMenu._();
 
   /// 档位与展示文案。
-  static const Map<double, String> _labels = <double, String>{
+  ///
+  /// 用 `static final` 而不是 `static const`：这个映射的键是 `double`，
+  /// 在云端工具链上以 const 形式出现时被常量求值器拒绝
+  /// （`Not a constant expression` / `Constant evaluation error`）。
+  /// 去掉 `const` 后它退化成普通的 map 字面量 —— 非 const 字面量不要求
+  /// 元素为编译期常量，语义完全不变，只是不再参与编译期规范化。
+  /// 这个表只在弹出菜单时查几次，没有任何性能影响。
+  static final Map<double, String> _labels = <double, String>{
     0.5: '0.5x 慢放',
     1.0: '1.0x 正常',
     1.25: '1.25x 稍快',

@@ -115,6 +115,19 @@ class FailureMapper {
         }
         return NetworkFailure('网络错误：${error.message ?? '未知'}',
             cause: error, url: url);
+
+      // 兜底分支：**不要**把 dio 的枚举成员逐个补完就完事。
+      // pubspec 里写的是 `dio: ^5.4.3+1`，而仓库没有 pubspec.lock，
+      // CI 每次都会解析到最新的 5.x —— dio 5.8 就新增了 `transformTimeout`。
+      // 对 switch 语句逐项穷举时，上游多加一个枚举值，这里立刻变成
+      // 「非穷尽 switch」编译错误（还会连带 "body might complete normally"）。
+      // 用 default 兜住：以后 dio 再加成员也不会让 CI 莫名其妙红掉。
+      default:
+        return NetworkFailure(
+          '网络错误（${error.type.name}）：${error.message ?? '未知'}',
+          cause: error,
+          url: url,
+        );
     }
   }
 }

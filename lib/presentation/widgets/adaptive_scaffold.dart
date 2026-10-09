@@ -159,7 +159,9 @@ class AdaptiveScaffold extends StatelessWidget {
           bottom: 0,
           child: SafeArea(
             top: false,
-            minimum: const EdgeInsets.only(bottom: margin),
+            // 这里**不能**用 const：margin 是运行时算出来的值
+            // （其它地方的 EdgeInsets 都是常量令牌，所以能 const）。
+            minimum: EdgeInsets.only(bottom: margin),
             child: _FloatingBottomBar(
               destinations: destinations,
               currentIndex: currentIndex,

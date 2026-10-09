@@ -1,5 +1,10 @@
 import 'dart:ui' show FontFeature;
 
+// ValueListenable / ValueNotifier 定义在 foundation 里，
+// 而 packages/flutter/lib/widgets.dart 只从 foundation 导出了 UniqueKey
+// （`export 'foundation.dart' show UniqueKey;`），因此 material.dart
+// **不会**把 ValueListenable 带进来，必须显式导入。
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../../../core/player/playback_state.dart';

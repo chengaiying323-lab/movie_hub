@@ -38,10 +38,21 @@ final class NetworkFailure extends Failure {
 }
 
 /// 超时错误：与 [NetworkFailure] 分离，便于 UI 提供"重试/换源"差异化引导。
+///
+/// ⚠️ 构造参数刻意与其它子类保持一致：`message` 是**必填位置参数**，
+/// `url` / `cause` / `stackTrace` 走命名参数。
+///
+/// 原先写成了 `TimeoutFailure([super.message = '请求超时'], {this.url, ...})`
+/// —— 这在 Dart 里是**非法签名**：
+/// 「可选参数要么全用命名、要么全用位置，不能混用」
+/// （ECMA-408 §9.2 / dart.dev：*optional parameters can be specified either as
+/// a set of named parameters or as a list of positional parameters, but not both*）。
+/// 解析器会丢掉 `{...}` 那一半，于是编译器接着报两串误导性错误：
+/// `Final field 'url' is not initialized` 和调用点的
+/// `No named parameter with the name 'url' / 'cause'`。
 final class TimeoutFailure extends Failure {
-  const TimeoutFailure([
-    super.message = '请求超时',
-  ], {
+  const TimeoutFailure(
+    super.message, {
     this.url,
     super.cause,
     super.stackTrace,
@@ -97,8 +108,12 @@ final class CacheFailure extends Failure {
 }
 
 /// 兜底错误。
+///
+/// 同样去掉了原先 `([super.message = '未知错误'], {...})` 的非法签名
+/// （原因见 [TimeoutFailure]）。`message` 现在是必填位置参数，
+/// 与其它子类一致；唯一的构造方是 `data/mappers/failure_mapper.dart` 里的
+/// `FailureMapper`，它总会带上 `runtimeType + 原始异常` 的描述，
+/// 所以原来那个"默认文案"实际用不上。
 final class UnknownFailure extends Failure {
-  const UnknownFailure([
-    super.message = '未知错误',
-  ], {super.cause, super.stackTrace});
+  const UnknownFailure(super.message, {super.cause, super.stackTrace});
 }

@@ -1,6 +1,10 @@
 import 'dart:async';
 import 'dart:math' as math;
 
+// ValueNotifier / ValueListenable 定义在 foundation 里。
+// widgets.dart 只从 foundation 导出了 UniqueKey，**不会**带出这两个类型，
+// 所以下面第 71/106 行直接用它们做类型标注时必须显式导入 foundation。
+import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
