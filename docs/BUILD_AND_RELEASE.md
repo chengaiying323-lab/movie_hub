@@ -25,7 +25,7 @@ GitHub **公开仓库**的 macOS / Windows runner 免费；私有仓库会消耗
 | 目标 | 命令 | 产物 |
 |---|---|---|
 | 生成平台目录 | `tool/scaffold_platforms.ps1` | `ios/`、`windows/` |
-| 修好 iOS 工程配置 | `python tool/patch_ios_project.py` | Info.plist / Podfile / pbxproj 就绪 |
+| 修好 iOS 工程配置 | `python tool/patch_ios_project.py` | Info.plist / Podfile（**缺失时自动生成**）/ pbxproj 就绪 |
 | 本地出 Windows 包 | `tool/package_windows.ps1` | `dist/*-portable.zip`（+ `-Installer` 出安装包） |
 
 本地做这些的**唯一好处**是省一次 CI 往返；产物和云端构建完全一致（走的是同一套脚本）。
@@ -65,18 +65,40 @@ fi
 （这条逻辑已用模拟 `flutter create` 产物的夹具实测通过：平台目录含隐藏文件一并拷入，
 仓库内 4 个文件全部未被改动。）
 
-### 1.3 iOS 工程补丁同样在云端跑
+### 1.3 iOS 工程补丁同样在云端跑（含补出 Podfile）
 
-`flutter create` 生成的 iOS 工程**开箱不可用**：
+`flutter create` 生成的 iOS 工程**开箱不可用**，而且少一个关键文件：
 
 | 问题 | 后果 |
 |---|---|
-| 最低版本是 12.0，而 media_kit 的 MPVKit 要求 13.0 | `pod install` 直接失败 |
+| **`ios/Podfile` 压根不存在** —— `flutter create` 不生成它（Flutter 已把模板挪到 `templates/cocoapods/Podfile-ios`，只在跑 CocoaPods 时才按需投放） | `pod install` 直接失败 |
+| 最低版本是 12.0，而 media_kit 的 MPVKit 要求 13.0 | `pod install` 报 `could not find compatible versions` |
 | ATS 没放行明文 HTTP | 大量 `http://` 视频直链被静默拦截，UI 上只显示「播放失败」 |
 | 缺横屏声明 | 播放页锁横屏**静默失效**（不报错，就是不转） |
 
 工作流在每个构建里都会跑 `python3 tool/patch_ios_project.py`，
+**Podfile 缺失时会现场生成一份标准模板**（优先取当前 Flutter SDK 自带的
+`Podfile-ios`，取不到才用脚本内置副本），并把它改造成：
+
+```ruby
+platform :ios, '13.0'          # 决定 CocoaPods 的依赖解析版本
+
+post_install do |installer|
+  installer.pods_project.targets.each do |target|
+    flutter_additional_ios_build_settings(target)   # ← 它会把目标拉回 Flutter 默认值
+    target.build_configurations.each do |config|
+      config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '13.0'   # ← 必须写在它之后
+    end
+  end
+end
+```
+
 所以**即使你从不碰 iOS 目录，产物也是配置正确的**。各项的详细原因见 [§2](#2-ios-工程配置补了哪些键为什么)。
+
+> 这一步刻意**不做** `test -f ios/Podfile` 之类的存在性断言：
+> 脚本自身出错会以非零退出码让步骤失败，断言是重复的；而多一层硬断言只会在
+> 「Podfile 由谁生成」这件事变化时制造假失败，把整条构建卡在一个本可自动修复的问题上。
+> 状态改由 `--print` 打印出来（可见但不阻断）。
 
 ### 1.4 想换成自己的 Bundle ID
 
@@ -192,14 +214,15 @@ env:
 | `UIApplicationSupportsIndirectInputEvents` | `true` | 触控板/鼠标的间接输入事件（桌面级指针语义） |
 | `ITSAppUsesNonExemptEncryption` | `false` | 本应用只用系统 HTTPS/标准库密码学，无「非豁免加密」。显式声明可跳过 App Store 每次上传的出口合规问询 |
 
-### 2.5 最低系统版本 13.0 —— **两个地方必须同时改**
+### 2.5 最低系统版本 13.0 —— **三处必须同时到位**
 
 这是本项目 iOS 构建最常见的失败原因：
 
-| 文件 | 字段 | 作用 |
+| 位置 | 字段 | 作用 |
 |---|---|---|
-| `ios/Podfile` | `platform :ios, '13.0'` | 决定 CocoaPods 的**依赖解析**版本 |
-| `ios/Runner.xcodeproj/project.pbxproj` | `IPHONEOS_DEPLOYMENT_TARGET = 13.0` | 决定**实际编译**的 target 版本 |
+| `ios/Podfile` 顶部 | `platform :ios, '13.0'` | 决定 CocoaPods 的**依赖解析**版本 |
+| `ios/Podfile` 的 `post_install` | `config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '13.0'` | 决定每个 Pod 目标**实际编译**的版本。必须写在 `flutter_additional_ios_build_settings(target)` **之后**，否则会被它拉回 Flutter 默认值（3.24 线是 12.0） |
+| `ios/Runner.xcodeproj/project.pbxproj` | `IPHONEOS_DEPLOYMENT_TARGET = 13.0` | 决定宿主 App **实际编译**的版本 |
 
 **为什么必须是 13.0**：media_kit 在 iOS 上打包的是 MPVKit（libmpv 的 Apple 平台构建），
 其 podspec 声明 `platform :ios, '13.0'`。而 Flutter 脚手架默认写 12.0。
@@ -213,18 +236,25 @@ env:
 > 顺带一提：`project.pbxproj` 里这个键在 Debug / Profile / Release **三套 build
 > configuration 里各有一份**，所以脚本会报「共 3 处」而不是「1 处」。
 > 看到 3 才说明改全了。
+>
+> 另外 `ios/Podfile` **并不由 `flutter create` 生成**（这点很反直觉，见 [§1.3](#13-ios-工程补丁同样在云端跑含补出-podfile)）。
+> 脚本在它缺失时会用 Flutter SDK 自带的官方模板现场补一份，再打上上面的两处 13.0。
 
 ### 2.6 不想用脚本？手工对照
 
-`patch_ios_project.py` 做三件事，手工做也可以：
+`patch_ios_project.py` 做四件事，手工做也可以：
 
 1. **Info.plist**：把 [§2.1](#21-ats--放行明文-http) ~ [§2.4](#24-其余键) 的 XML 片段插进
    顶层 `<dict>` 里（用 Xcode 的 plist 编辑器，或直接改 XML）。
-2. **Podfile**：把 `# platform :ios, '12.0'` 这行的注释去掉并改成 `13.0`。
-3. **pbxproj**：在 Xcode 里选中 `Runner` target → Build Settings → 搜
+2. **Podfile**：若 `ios/Podfile` 不存在，先跑一次 `flutter build ios`（或
+   `cd ios && pod install`）让 Flutter 工具投放模板；然后把 `# platform :ios, '12.0'`
+   这行的注释去掉并改成 `13.0`。
+3. **Podfile 的 post_install**：在 `flutter_additional_ios_build_settings(target)`
+   之后追加 `target.build_configurations.each { ... IPHONEOS_DEPLOYMENT_TARGET = '13.0' }`。
+4. **pbxproj**：在 Xcode 里选中 `Runner` target → Build Settings → 搜
    `iOS Deployment Target` → 改成 `13.0`（三处 configuration 都要）。
 
-用脚本的好处是**幂等**且**不会漏掉那三处 configuration**。
+用脚本的好处是**幂等**、**会自动补出缺失的 Podfile**、且**不会漏掉那三处 configuration**。
 
 ---
 
@@ -708,8 +738,10 @@ entitlements。有三类 entitlement 在 iOS 15 / A12+ 上被禁用，带上会*
 |---|---|
 | 工作流排队失败「no matching runner」 | runner 标签失效。改用 `macos-15`（**别用 `macos-14`**，2026-11-02 起不再支持） |
 | 构建时报 `flutter create` 失败 | 云端脚手架生成步骤出错。检查 `--project-name movie_hub` 与 `--org` 是否合法（不能有连字符/中文）；这一步不需要仓库里预先存在 `ios/` |
+| 报 `ios/Podfile 文件不存在` 或 `pod install` 找不到 Podfile | 补丁脚本本应在缺失时自动生成（见 [§1.3](#13-ios-工程补丁同样在云端跑含补出-podfile)）。看「应用 iOS 工程补丁」步骤日志里 `Podfile：` 那段自检输出定位 |
+| `pod install` 报 `Platform :ios, '12.0'` 或部署版本冲突 | Podfile 用了 Flutter 默认模板、没走到我们的补丁。确认工作流里「应用 iOS 工程补丁」在 `pod install` **之前** |
 | `No such module 'Flutter'` | Flutter 版本 < 3.24.4 配 Xcode 16。把 `flutter-version` 改到 3.24.4+ |
-| `CocoaPods could not find compatible versions for pod "media_kit_libs_ios_video"` | 最低版本没抬到 13.0，或只改了一处。确认工作流里的「应用 iOS 工程补丁」步骤没被跳过 |
+| `CocoaPods could not find compatible versions for pod "media_kit_libs_ios_video"` | 最低版本没抬到 13.0，或三处没改全。确认「应用 iOS 工程补丁」步骤没被跳过，并检查日志里是否出现 `post_install 结构非标准` 的 `[提示]` |
 | `ModuleCache.noindex/Session.modulevalidation` 不存在 | Xcode 15 写的模块缓存被 Xcode 16 读到。工作流每次都是干净环境，不会出现；本地出现就删 `~/Library/Developer/Xcode/DerivedData` |
 | 构建成功但 Artifact 为空 | `flutter build ios` 实际失败了但被吞。翻「构建 iOS（未签名）」那一步的完整日志 |
 | Release 里没有 IPA | tag 不是 `v` 开头（工作流用 `refs/tags/v` 判定） |

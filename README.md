@@ -15,17 +15,25 @@ Flutter + Riverpod · 目标平台：**Windows 桌面端** / **iOS 移动端**
 统一进入 `PlayerPage`，播放期间由内核位置回调驱动 `reportPosition`，  
 5 秒心跳落盘、≥90% 自动转「已看」，退出时 `endSession` 强制补写最后一帧位置。
 
-全平台分发已打通：`tool/package_windows.ps1` 本地出 Windows 便携版 / 安装包，  
-`.github/workflows/build-ios.yml` 在 macOS runner 上出**未签名 `.ipa`**  
-（无需任何 Apple 证书），下载后用 TrollStore / AltStore / Sideloadly 自签安装。  
+全平台分发已打通：`.github/workflows/build-ios.yml` 在 macOS runner 上出**未签名 `.ipa`**，
+`.github/workflows/build-windows.yml` 在 Windows runner 上出**便携版 zip**（可选 Inno Setup 安装包），
+两者都**不需要本地装 Flutter、不需要任何 Apple 证书**。
+下载后用 TrollStore / AltStore / Sideloadly 自签安装。
 详见 **[`docs/BUILD_AND_RELEASE.md`](docs/BUILD_AND_RELEASE.md)**。
 
-> ⚠️ **首次克隆后必做两步**，否则任何构建都会失败：
+> ✅ **本仓库刻意不预置 `ios/` 与 `windows/` 平台目录** —— 它们是构建产物，不进版本库。
+> 云端工作流会在构建前**按需自动生成**（`flutter create --platforms=...`）并打上 iOS 工程补丁
+> （**包括补出 `flutter create` 不会生成的 `ios/Podfile`**），
+> 所以**本地零环境也能一键出包**：你只需要 Git，把仓库推上去即可。
 >
-> ```powershell
-> powershell -ExecutionPolicy Bypass -File tool/scaffold_platforms.ps1   # 补 ios/ windows/
-> python tool/patch_ios_project.py                                       # 补 iOS 工程配置
+> ```bash
+> git init && git branch -M main && git add . && git commit -m "chore: MovieHub 初始提交"
+> git remote add origin https://github.com/<你的用户名>/movie_hub.git
+> git push -u origin main
 > ```
+>
+> 💡 **本地已装 Flutter 时**（可选，非必做）：可跑 `tool/scaffold_platforms.ps1` 生成平台目录、
+> `tool/patch_ios_project.py` 补 iOS 配置，用于本机调试。工作流检测到目录已存在会跳过生成，两者不冲突。
 
 ---
 
@@ -77,16 +85,19 @@ movie_hub/
 ├── pubspec.yaml
 ├── analysis_options.yaml
 ├── README.md
+├── .gitignore                          # ★ 第五阶段补齐（原本缺失）
+├── .gitattributes                      # ★ 行尾规则（文本统一 LF，.ps1/.iss 保持 CRLF）
 ├── .github/
 │   └── workflows/
-│       └── build-ios.yml               # ★ iOS 未签名 IPA 云端构建（第五阶段新增）
+│       ├── build-ios.yml               # ★ iOS 未签名 IPA 云端构建（含按需生成 ios/ 脚手架）
+│       └── build-windows.yml           # ★ Windows 便携版云端构建（含按需生成 windows/ 脚手架）
 ├── docs/
 │   ├── SOURCE_PROTOCOL.md              # 数据源订阅协议规范（重点）
 │   └── BUILD_AND_RELEASE.md            # ★ 打包与发布指南（第五阶段新增）
 ├── tool/
 │   ├── verify_structure.py             # 结构静态校验（无需 Flutter 工具链）
-│   ├── scaffold_platforms.ps1          # ★ 生成 ios/ windows/ 平台脚手架
-│   ├── patch_ios_project.py            # ★ iOS 工程配置幂等补丁（Info.plist / Podfile / pbxproj）
+│   ├── scaffold_platforms.ps1          # 生成 ios/ windows/ 平台脚手架（本地有 Flutter 时可选）
+│   ├── patch_ios_project.py            # ★ iOS 工程配置幂等补丁（含按需生成 Podfile）
 │   ├── package_windows.ps1             # ★ Windows 一键打包（便携版 / 安装包）
 │   └── installer/
 │       └── movie_hub.iss               # ★ Inno Setup 安装包脚本（UTF-8 BOM）
@@ -962,7 +973,8 @@ accent  #E8543F   ←→    accent          #FF6B55（暗底提亮）
 | `UIViewControllerBasedStatusBarAppearance`                     | `false`       | 播放页 `immersiveSticky` 隐藏状态栏失效                                                                |
 | `CADisableMinimumFrameDurationOnPhone`                         | `true`        | ProMotion 机型帧率被压在 60Hz                                                                       |
 | `ITSAppUsesNonExemptEncryption`                                | `false`       | 每次上传 App Store 都要回答出口合规问询                                                                    |
-| Podfile `platform :ios` + pbxproj `IPHONEOS_DEPLOYMENT_TARGET` | `13.0`        | 见 §7.2 第三行                                                                                   |
+| **Podfile 本身**（`flutter create` **不生成**它）                       | 按 SDK 官方模板补出   | 缺文件 → `pod install` 直接失败。模板取自当前 Flutter SDK，找不到才用脚本内置副本                                     |
+| Podfile `platform :ios` + `post_install` 覆盖 + pbxproj `IPHONEOS_DEPLOYMENT_TARGET` | `13.0`        | 见 §7.2 第三行。**三处缺一不可**，`post_install` 的覆盖还必须写在 `flutter_additional_ios_build_settings` 之后         |
 
 **为什么屏幕方向要写成「四个方向全集」**：Info.plist 是「允许出现的全集」，  
 Dart 侧是「运行时收窄」。播放页锁横屏能生效的前提，正是这里已经声明了 landscape。
@@ -971,14 +983,26 @@ Dart 侧是「运行时收窄」。播放页锁横屏能生效的前提，正是
 
 工作流（`.github/workflows/build-ios.yml`）的关键几步：
 
-1. `flutter build ios --release --no-codesign` → `build/ios/iphoneos/Runner.app`
-2. `ditto Runner.app Payload/Runner.app` 组装标准 IPA 结构
-3. **符号链接守卫**：比对源与副本的链接数，不一致就报错
-4. `zip -r -y -q -X` 压缩成 `movie_hub_unsigned.ipa`
-5. 结构自检 + 归档侧再确认链接存活
-6. 上传 Artifact；tag 推送时自动发 Release
+1. **按需生成 `ios/` 平台脚手架**（仓库不预置）：在 `RUNNER_TEMP` 里
+   `flutter create --platforms=ios --org com.moviehub --project-name movie_hub --no-pub <临时目录>`，
+   然后只把 `ios/` 拷回来。已有工程则跳过
+2. **应用 iOS 工程补丁**：`python3 tool/patch_ios_project.py --print`
+   （幂等；**并在 `ios/Podfile` 缺失时用 SDK 官方模板补出一份**
+   —— `flutter create` 不生成它，这是最容易漏掉的一环，见 §7.3）
+3. `flutter build ios --release --no-codesign` → `build/ios/iphoneos/Runner.app`
+4. `ditto Runner.app Payload/Runner.app` 组装标准 IPA 结构
+5. **符号链接守卫**：比对源与副本的链接数，不一致就报错
+6. `zip -r -y -q -X` 压缩成 `movie_hub_unsigned.ipa`
+7. 结构自检 + 归档侧再确认链接存活
+8. 上传 Artifact；tag 推送时自动发 Release
 
-**为什么第 3、4 步要看这么细**：`Runner.app` 内的 framework 含  
+**为什么脚手架在临时目录生成、只拷平台目录回来**：若改在仓库内直接跑
+`flutter create .`，它会顺手补写 `analysis_options.yaml`、`.gitignore`、`.metadata`
+等共享文件，且行为随 Flutter 版本变动 —— 等于让构建过程偷偷改你的源码。
+临时目录方案对仓库**零副作用**（`cp -R "${SCAFFOLD_DIR}/ios/." ios/` 的 `/.`
+是为了带走隐藏文件 `ios/.gitignore`）。
+
+**为什么第 5、6 步要看这么细**：`Runner.app` 内的 framework 含  
 `Versions/Current`、`Headers` 这类符号链接。一旦被解引用成实体副本，  
 产出的 IPA 结构就不合法——表现为**装机时提示「无法安装」或装完闪退**，  
 而且报错完全指不到打包这一步。所以这里把「链接必须存活」从隐式不变量  
@@ -1041,20 +1065,40 @@ iOS 17.0.1 及以上、18+ / 26 **均不支持 TrollStore**，只能走 7 天签
 | PiP                       | Info.plist **不声明** `picture-in-picture` | libmpv 自绘纹理拿不到 PiP，声明了是自我欺骗。要做 PiP 需换 iOS 侧内核，属独立技术路线           |
 | 便携版形态                     | 目录 zip，不做单文件                            | 真单文件需 MSIX / SFX，对自用场景是纯复杂度                                     |
 | iOS 工程配置                  | 脚本化（Python）而非文档化                        | 文档会漏、会过期；脚本幂等、可重复执行，且云端工作流也跑一遍，本地忘了也不影响产物                       |
+| `ios/Podfile` 缺失时         | **自动生成标准模板**，而不是报错中断                    | `flutter create` 不产 Podfile；中断会把整条构建卡在一个本可自动修复的问题上。模板优先取 SDK 自带版本，避免副本过时 |
+| 云端是否断言 Podfile 存在         | **不断言**，改为打印状态                          | 脚本自身非零退出已足够；硬断言只会在「Podfile 由谁生成」变化时制造假失败                        |
+| 平台目录 `ios/` `windows/`    | **不进版本库**，构建时云端按需生成                     | 它们是脚手架产物，且模板会掺入版本相关的文件；进版本库只制造无意义 diff。副作用是「本地零环境也能一键出包」       |
 
 ---
 
 ## 8. 运行与打包
 
-### 8.1 首次运行（新克隆的仓库）
+### 8.1 首次运行
+
+**本地零环境（无 Flutter SDK）—— 推荐路径**
+
+你不需要装任何东西，只要 Git。平台目录由云端工作流按需生成：
+
+```bash
+git init && git branch -M main && git add . && git commit -m "chore: MovieHub 初始提交"
+git remote add origin https://github.com/<你的用户名>/movie_hub.git
+git push -u origin main
+```
+
+推完即自动构建：`Actions → Build iOS (Unsigned IPA)` / `Build Windows (Portable)`，
+产物在两处 **Artifacts** 区。不用本地跑 `scaffold_platforms.ps1`，也不用
+`patch_ios_project.py` —— 它们已经写进工作流步骤里了。
+
+**本地有 Flutter 时（可选，用于本机调试）**
 
 ```powershell
 flutter pub get
 
-# ① 补平台目录（本仓库不预置 ios/ windows/）
+# ① 补平台目录（本仓库不预置 ios/ windows/；已有则自动跳过）
 powershell -ExecutionPolicy Bypass -File tool/scaffold_platforms.ps1
 
 # ② 补 iOS 工程配置（ATS / 后台音频 / 旋转 / 最低版本 13.0）
+#    ios/Podfile 不存在时会自动生成一份标准模板
 python tool/patch_ios_project.py --print
 
 flutter analyze
@@ -1069,6 +1113,15 @@ flutter run -d windows      # Windows 桌面端
 
 ### 8.2 打包
 
+**两个平台都能走云端（推荐）**：
+
+```bash
+git push origin main                        # 自动构建 iOS .ipa + Windows .zip
+git tag v1.0.0 && git push origin v1.0.0    # 自动发布 GitHub Release（两个产物都挂上去）
+```
+
+**本地有 Flutter 时**（Windows 包）：
+
 ```powershell
 # Windows 便携版 zip
 powershell -ExecutionPolicy Bypass -File tool/package_windows.ps1
@@ -1077,12 +1130,7 @@ powershell -ExecutionPolicy Bypass -File tool/package_windows.ps1
 powershell -ExecutionPolicy Bypass -File tool/package_windows.ps1 -Clean -Installer
 ```
 
-iOS 包走云端：
-
-```powershell
-git push origin main            # 自动构建，产物在 Actions → Artifacts
-git tag v1.0.0; git push origin v1.0.0   # 自动发布 GitHub Release
-```
+iOS 包**只能**走云端（Windows 无 Xcode）。
 
 完整流程、参数说明与故障排查见 **[`docs/BUILD_AND_RELEASE.md`](docs/BUILD_AND_RELEASE.md)**。
 
@@ -1177,19 +1225,26 @@ python tool/verify_structure.py
 
 **第五阶段（已完成）**
 
-- `tool/scaffold_platforms.ps1`：生成 `ios/` `windows/` 平台脚手架（本仓库是「先写业务码、后补平台目录」的形态）
-- `tool/patch_ios_project.py`：幂等补齐 iOS 工程配置  
-  （ATS 明文放行 / 后台音频 / 屏幕方向全集 / iPad 全屏 / 状态栏接管 / 120Hz /  
-  加密合规，以及 Podfile 与 pbxproj 的最低版本 13.0）
-- `.github/workflows/build-ios.yml`：`macos-15` + Flutter 3.24.5 + CocoaPods 缓存，  
-  出**未签名** `.ipa`；含符号链接守卫、IPA 结构自检、Artifact 上传、  
-  tag 推送自动发 GitHub Release；`strip-signatures` 按需剥离内嵌签名
-- `tool/package_windows.ps1`：一键出 Windows 便携版 zip（含产物完整性校验、  
+- `tool/scaffold_platforms.ps1` / `tool/patch_ios_project.py`：本地有 Flutter 时用于补
+  `ios/` `windows/` 平台目录与 iOS 工程配置（**可选**，云端工作流已内置这两步）
+- `tool/patch_ios_project.py`：幂等补齐 iOS 工程配置
+  （ATS 明文放行 / 后台音频 / 屏幕方向全集 / iPad 全屏 / 状态栏接管 / 120Hz /
+  加密合规；**`ios/Podfile` 缺失时按 SDK 官方模板生成**；Podfile 的
+  `platform` + `post_install` 覆盖 + pbxproj 的部署版本，三处一并钉到 13.0）
+- `.github/workflows/build-ios.yml`：`macos-15` + Flutter 3.24.5 + CocoaPods 缓存，
+  **构建前按需生成 `ios/` 脚手架并打 iOS 补丁**，出**未签名** `.ipa`；
+  含符号链接守卫、IPA 结构自检、Artifact 上传、tag 推送自动发 GitHub Release；
+  `strip-signatures` 按需剥离内嵌签名
+- `.github/workflows/build-windows.yml`：`windows-latest`，按需生成 `windows/` 脚手架，
+  复用 `tool/package_windows.ps1` 出便携版 zip（可选 Inno Setup 安装包），tag 推送同样发 Release
+- `tool/package_windows.ps1`：一键出 Windows 便携版 zip（含产物完整性校验、
   自动附带「使用说明.txt」说明 VC++ 运行库依赖），`-Installer` 走 Inno Setup 出安装包
-- `tool/installer/movie_hub.iss`：Inno Setup 6 脚本（UTF-8 BOM + 中文界面 +  
+- `tool/installer/movie_hub.iss`：Inno Setup 6 脚本（UTF-8 BOM + 中文界面 +
   安装前查注册表检测 VC++ 运行库）
-- `docs/BUILD_AND_RELEASE.md`：Git 推送 → 云端构建 → 下载 Artifact →  
-  TrollStore / AltStore / Sideloadly / SideStore 侧载的全流程与故障排查表
+- `.gitignore` / `.gitattributes`：补齐（项目原本缺失）。前者确保 `build/` `dist/`
+  `Pods/` `*.ipa` 与**平台目录 `ios/` `windows/`** 不被提交；后者统一行尾规则
+- `docs/BUILD_AND_RELEASE.md`：**零本地环境推送 → 云端构建 → 下载 Artifact →
+  TrollStore / AltStore / Sideloadly / SideStore 侧载**的全流程与故障排查表
 
 **后续阶段**
 

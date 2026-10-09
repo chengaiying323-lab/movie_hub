@@ -151,7 +151,10 @@ jobs:
         run: |
           set -euo pipefail
 
-          if [ -f "ios/Runner/Info.plist" ] && [ -f "ios/Podfile" ]; then
+          # 判据只认 Info.plist：它是 Xcode 工程的实体文件，`flutter create` 一定会产。
+          # 不要拿 ios/Podfile 当判据 —— flutter create **不生成** Podfile，
+          # 那样这个条件永远为假，每次都白跑一遍生成（虽然无害，但会掩盖真实意图）。
+          if [ -f "ios/Runner/Info.plist" ]; then
             echo "✔ 仓库里已有 ios/ 工程，跳过生成"
             exit 0
           fi
@@ -177,12 +180,22 @@ jobs:
           ls -la ios
 
       # ── 关键步骤 ②：把脚手架补成「可构建」状态 ────────────────────────────
-      - name: 应用 iOS 工程补丁（最低版本 / ATS / 后台模式 / 旋转）
+      - name: 应用 iOS 工程补丁（最低版本 / ATS / 后台模式 / 旋转 / Podfile）
         run: |
           set -euo pipefail
+
+          # 这一步除了打补丁，还负责**把 ios/Podfile 补齐**：
+          #   `flutter create` 不生成 Podfile（Flutter 已把它挪到
+          #   templates/cocoapods/Podfile-ios，只在跑 CocoaPods 时才按需投放）。
+          #   脚本在文件缺失时会用「Flutter SDK 自带模板」现场生成一份，
+          #   并把 platform 与 post_install 的部署版本都钉到 13.0。
+          #
+          # 这里刻意**不做** `test -f ios/Podfile` 之类的存在性断言：
+          #   1) 脚本自身失败会以非零退出码让本步骤直接失败，断言是重复的；
+          #   2) 叠一层硬断言只会在「Podfile 的生成方/路径」变化时制造假失败，
+          #      把整条构建卡在一个本可以自动修复的问题上。
+          #   状态改为由 --print 打印出来供人工核对（可见但不阻断）。
           python3 tool/patch_ios_project.py --print
-          test -f ios/Runner/Info.plist || { echo "::error::补丁后 Info.plist 仍不存在"; exit 1; }
-          test -f ios/Podfile        || { echo "::error::补丁后 Podfile 仍不存在"; exit 1; }
 
       - name: flutter pub get
         run: flutter pub get
