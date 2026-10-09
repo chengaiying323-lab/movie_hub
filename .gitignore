@@ -1,0 +1,113 @@
+# =============================================================================
+# MovieHub · Git 忽略规则
+# =============================================================================
+# 目标：仓库里只保留「源码 + 构建脚本 + 文档」。
+# 所有可由 `flutter create` / `flutter pub get` / `flutter build` 重新生成的东西都不提交。
+#
+# 特别注意：**平台目录（ios/ windows/）刻意不进版本库**。
+# 它们是脚手架产物，由 GitHub Actions 在构建前按需生成
+# （见 .github/workflows/build-ios.yml 的「生成 ios/ 平台脚手架」步骤）。
+# 本机若用 tool/scaffold_platforms.ps1 生成过，也一律忽略，避免把
+# 版本相关的模板 diff 提上去。下面最后一段是这条规则的落地。
+# =============================================================================
+
+# ── Dart / Flutter 通用 ──────────────────────────────────────────────────────
+.dart_tool/
+.packages
+.pub-cache/
+.pub/
+build/
+
+# Flutter 在平台目录里生成的临时文件（不要提交）
+**/Flutter/ephemeral/
+**/flutter/ephemeral/
+**/Flutter/Flutter.framework
+**/Flutter/Flutter.podspec
+**/Flutter/Generated.xcconfig
+**/Flutter/flutter_export_environment.sh
+
+# 插件自动生成的注册文件
+**/generated_plugin_registrant.dart
+**/generated_plugin_registrant.cc
+**/generated_plugin_registrant.h
+**/generated_plugins.cmake
+**/generated_plugins.cmake.lock
+
+# ── IDE ─────────────────────────────────────────────────────────────────────
+.idea/
+.vscode/
+*.iml
+*.ipr
+*.iws
+.idea_modules/
+
+# ── macOS / Xcode ───────────────────────────────────────────────────────────
+# 注意：Xcode 的用户态目录是 <项目>.xcodeproj/xcuserdata/<用户>.xcuserdatad/，
+# 所以只写 `xcuserdata/` 是不够的，要带路径通配。
+**/xcuserdata/
+**/*.xcuserdatad/
+**/DerivedData/
+**/build/*.xcarchive/
+*.moved-aside
+*.hmap
+*.ipa
+*.dSYM.zip
+*.dSYM
+*.xcuserstate
+.symlinks/
+
+# CocoaPods / Xcode 工程产物（现在整个 ios/ 都被忽略，这几条是防御性冗余）
+ios/Podfile.lock
+ios/Pods/
+Pods/
+
+# ── Windows ─────────────────────────────────────────────────────────────────
+**/runner/Release/
+**/runner/Debug/
+**/runner/Profile/
+*.pdb
+*.ilk
+*.exp
+windows/flutter/ephemeral/
+
+# ── 本项目的打包产物 ─────────────────────────────────────────────────────────
+# dist/ 是 tool/package_windows.ps1 的输出目录（便携版 / 安装包）
+dist/
+
+# ── 平台目录（核心决策：构建时云端按需生成，不进版本库） ─────────────────────
+# 前导 `/` 锚定到仓库根，避免误伤深层同名目录。
+# 需要提交平台目录时（例如改用自己的签名配置），把这两行注释掉即可 ——
+# 工作流检测到目录已存在会自动跳过生成步骤，两者不冲突。
+/ios/
+/windows/
+/android/
+/macos/
+/linux/
+/web/
+
+# Inno Setup 中间产物
+tool/installer/Output/
+*.iss.bak
+
+# ── 测试与覆盖率 ────────────────────────────────────────────────────────────
+coverage/
+test/.test_coverage.dart
+*.lcov
+
+# ── 编辑器 / 系统 ───────────────────────────────────────────────────────────
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── 本地私有配置（绝不提交） ─────────────────────────────────────────────────
+# 若你把数据源订阅或密钥写在本地文件里调试，放在这些路径下。
+# 带 `!` 的是示例文件，必须提交。
+.env
+.env.*
+!.env.example
+*.local.json
+!assets/sample/subscription.example.json
+secrets/

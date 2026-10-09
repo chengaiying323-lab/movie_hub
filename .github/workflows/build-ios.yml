@@ -1,0 +1,343 @@
+# =============================================================================
+# MovieHub · iOS 未签名 .ipa 云端构建（零本地环境）
+# =============================================================================
+#
+# 设计前提：**开发者本地不安装 Flutter SDK**。
+# -----------------------------------------------------------------------------
+# 因此本工作流不只负责「构建」，还负责「把仓库补成一个可构建的状态」：
+#
+#   1. 仓库里没有 ios/ 平台目录（Flutter 不会自动生成）→ 在云端生成
+#   2. flutter create 生成的 iOS 工程开箱不可用（最低版本 12.0 与 MPVKit 的
+#      13.0 冲突、ATS 没放行明文 HTTP）→ 在云端打补丁
+#   3. 构建、封装成未签名 .ipa、上传产物、tag 推送时发 Release
+#
+# 你本地只需要做一件事：把源码推上来。详见 docs/BUILD_AND_RELEASE.md。
+#
+# 平台目录为什么在**临时目录**生成，而不是在仓库里跑 `flutter create .`
+# -----------------------------------------------------------------------------
+# `flutter create .` 虽然默认不覆盖已存在的文件（`--overwrite` 默认为 false），
+# 但它确实会**补写**缺失的模板文件（analysis_options.yaml、.gitignore、
+# .metadata 等），并且行为随 Flutter 版本变动 —— 这个副作用是不可控的。
+#
+# 改成「临时目录生成 → 只把 ios/ 拷贝回来」有两个好处：
+#   * 对仓库零副作用：绝不触碰 README.md / .gitignore / lib/ / pubspec.yaml；
+#   * 意图明确：我们需要的就是 ios/ 这一个目录，拷贝范围就等于需求范围。
+#
+# 三个时效性事实（别照抄网上的老配置）
+# -----------------------------------------------------------------------------
+# 【runner 用 macos-15，不用 macos-14】
+#   GitHub 官方公告：macos-14（Sonoma）镜像自 2026-07-06 起进入弃用期，
+#   2026-11-02 起**完全停止支持**。继续用会某天直接排队失败（no matching
+#   runner），而且失败信息与代码毫无关系，极难排查。
+#
+# 【Flutter 默认 3.24.5，不是 3.22.x】
+#   macos-15 镜像默认 Xcode 16.x，而 Xcode 16 引入了新的 module verifier。
+#   Flutter < 3.24.4 的 iOS 工具链不认识它，会在编译期报：
+#       Swift Compiler Error: No such module 'Flutter'
+#       no such file or directory: '.../ModuleCache.noindex/Session.modulevalidation'
+#   官方在 flutter/flutter#155438、#157461 修复。
+#   pubspec.yaml 声明 `flutter: '>=3.22.0'` 是**下限**，用 3.24.5 完全兼容。
+#
+# 【iOS 最低版本 13.0，Podfile 与 pbxproj 必须同时改】
+#   media_kit 在 iOS 上打包的是 MPVKit（libmpv 的 Apple 平台构建），其
+#   podspec 要求 13.0；而 flutter create 生成的脚手架写的是 12.0。
+#   两个地方分别决定「CocoaPods 依赖解析版本」与「实际编译 target 版本」，
+#   只改一处仍会失败。tool/patch_ios_project.py 会同时处理。
+#
+# 另外：只声明 UIBackgroundModes: audio，不声明 picture-in-picture。
+# media_kit 在 iOS 走 libmpv 自绘纹理，不是 AVPlayerLayer，拿不到系统级 PiP，
+# 声明了反而误导。详见 docs/BUILD_AND_RELEASE.md「能力边界」。
+#
+# =============================================================================
+
+name: Build iOS (Unsigned IPA)
+
+run-name: iOS 未签名包 · ${{ github.ref_name }}
+
+on:
+  push:
+    branches: [main, master]
+    tags: ['v*']
+  pull_request:
+    branches: [main, master]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - '.gitignore'
+  workflow_dispatch:
+    inputs:
+      flutter-version:
+        description: 'Flutter SDK 版本（须 >= 3.24.4 才能配合 runner 上的 Xcode 16）'
+        required: false
+        default: '3.24.5'
+        type: string
+      xcode-version:
+        description: 'Xcode 版本；留空则使用 runner 镜像默认版本'
+        required: false
+        default: ''
+        type: string
+      build-mode:
+        description: '构建模式'
+        required: true
+        default: 'release'
+        type: choice
+        options: ['release', 'profile', 'debug']
+      strip-signatures:
+        description: '剥离已嵌入的代码签名（侧载工具报"签名无效"时开启）'
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  FLUTTER_VERSION: ${{ inputs.flutter-version || '3.24.5' }}
+  BUILD_MODE: ${{ inputs.build-mode || 'release' }}
+  IPA_NAME: movie_hub_unsigned.ipa
+  APP_DIR: build/ios/iphoneos
+  # iOS 反向域名前缀，决定 Bundle ID（com.moviehub.movieHub）。
+  # 改这里就能换 Bundle ID —— 换完记得也改一下下面 scaffold 步骤的缓存无关性说明。
+  IOS_ORG: com.moviehub
+
+jobs:
+  build-ios:
+    name: 构建未签名 IPA
+    runs-on: macos-15
+    # 首次构建要下载 MPVKit（media_kit 的 iOS 原生库，体积较大），给足余量。
+    timeout-minutes: 60
+
+    steps:
+      - name: 检出源码
+        uses: actions/checkout@v4
+
+      - name: 选择指定 Xcode（可选）
+        if: inputs.xcode-version != ''
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: ${{ inputs.xcode-version }}
+
+      - name: 安装 Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+          pub-cache: true
+
+      - name: 打印工具链版本
+        run: |
+          echo "── macOS ──"         && sw_vers
+          echo "── Xcode ──"         && xcodebuild -version
+          echo "── xcode-select ──"  && xcode-select -p
+          echo "── CocoaPods ──"     && pod --version
+          echo "── Flutter ──"       && flutter --version
+
+      - name: 读取应用版本号
+        id: version
+        run: |
+          VERSION=$(grep -m1 '^version:' pubspec.yaml \
+            | sed 's/^version:[[:space:]]*//' \
+            | tr -d '\r' | tr -d '"' | tr -d "'")
+          echo "version=${VERSION:-0.0.0}" >> "$GITHUB_OUTPUT"
+          echo "应用版本：${VERSION:-0.0.0}"
+
+      # ── 关键步骤 ①：按需生成 ios/ 平台脚手架 ──────────────────────────────
+      - name: 生成 ios/ 平台脚手架（缺失时）
+        run: |
+          set -euo pipefail
+
+          if [ -f "ios/Runner/Info.plist" ] && [ -f "ios/Podfile" ]; then
+            echo "✔ 仓库里已有 ios/ 工程，跳过生成"
+            exit 0
+          fi
+
+          echo "仓库里没有 ios/ 工程 —— 在临时目录生成后只拷贝 ios/ 回来"
+          SCAFFOLD_DIR="${RUNNER_TEMP}/movie_hub_scaffold"
+          rm -rf "${SCAFFOLD_DIR}"
+
+          # --no-pub：临时工程不需要跑 pub get，避免无谓耗时
+          flutter create \
+            --platforms=ios \
+            --org "${IOS_ORG}" \
+            --project-name movie_hub \
+            --no-pub \
+            "${SCAFFOLD_DIR}"
+
+          rm -rf ios
+          mkdir -p ios
+          # 源路径带 `/.` 是为了连隐藏文件（ios/.gitignore）一起拷进来
+          cp -R "${SCAFFOLD_DIR}/ios/." ios/
+
+          echo "✔ 已生成 ios/ ："
+          ls -la ios
+
+      # ── 关键步骤 ②：把脚手架补成「可构建」状态 ────────────────────────────
+      - name: 应用 iOS 工程补丁（最低版本 / ATS / 后台模式 / 旋转）
+        run: |
+          set -euo pipefail
+          python3 tool/patch_ios_project.py --print
+          test -f ios/Runner/Info.plist || { echo "::error::补丁后 Info.plist 仍不存在"; exit 1; }
+          test -f ios/Podfile        || { echo "::error::补丁后 Podfile 仍不存在"; exit 1; }
+
+      - name: flutter pub get
+        run: flutter pub get
+
+      # 非阻塞：本项目尚未在真机工具链上编译过，静态分析大概率有输出。
+      # 让它只做「提示」而不挡住打包，否则第一次跑必然拿不到 IPA。
+      - name: 静态分析（仅告警）
+        continue-on-error: true
+        run: flutter analyze
+
+      - name: 缓存 CocoaPods
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/Library/Caches/CocoaPods
+            ios/Pods
+          # key 用 pubspec.lock + Podfile 而不是 ios/Podfile.lock：
+          # 后者按 Flutter 官方模板惯例是 gitignore 的，干净检出时并不存在，
+          # hashFiles 会返回空串 → key 恒定不变 → 改了依赖也照样命中旧缓存。
+          # 真正决定 pod 集合的是「插件列表（pubspec.lock）」+「Podfile 配置」。
+          key: ${{ runner.os }}-pods-${{ hashFiles('pubspec.lock', 'ios/Podfile') }}
+          restore-keys: |
+            ${{ runner.os }}-pods-
+
+      # 显式跑一次 pod install：出错时能直接看到 CocoaPods 的原始报错
+      # （比如 media_kit 要求 iOS 13.0 而 Podfile 写了 12.0），
+      # 比让 flutter build 把它包在 "Xcode build done" 里好排查得多。
+      - name: CocoaPods 安装
+        working-directory: ios
+        run: pod install
+
+      - name: 构建 iOS（未签名）
+        run: |
+          flutter build ios --${{ env.BUILD_MODE }} --no-codesign \
+            --build-number=${{ github.run_number }}
+
+      - name: 剥离嵌入的代码签名（可选）
+        if: inputs.strip-signatures == true
+        run: |
+          set -euo pipefail
+          APP="${APP_DIR}/Runner.app"
+          test -d "$APP" || { echo "::error::找不到 $APP"; exit 1; }
+          COUNT=$(find "$APP" -name "_CodeSignature" -type d | wc -l | tr -d ' ')
+          find "$APP" -name "_CodeSignature" -type d -prune -exec rm -rf {} +
+          echo "已移除 ${COUNT} 个 _CodeSignature 目录"
+
+      - name: 封装为未签名 IPA
+        id: pack
+        run: |
+          set -euo pipefail
+
+          test -d "${APP_DIR}/Runner.app" \
+            || { echo "::error::未找到 ${APP_DIR}/Runner.app，构建可能已失败"; exit 1; }
+
+          cd "${APP_DIR}"
+          rm -rf Payload "${IPA_NAME}"
+          mkdir -p Payload
+
+          # 用 ditto 而不是 cp -R 复制 .app 包。
+          # macOS 的 `cp -R` 其实会保留符号链接，但它的行为依赖
+          # "源路径带不带结尾斜杠"这种隐式语义，一旦有人手滑加了 `/`
+          # 就会变成 `Payload/Runner.app/Runner.app` —— 直接是不合法的 IPA。
+          # ditto 是 Apple 专为 bundle 设计的复制工具，目标路径含义明确，
+          # 同时保留符号链接、权限与扩展属性。
+          ditto Runner.app Payload/Runner.app
+
+          # 把"符号链接必须存活"从不变量变成断言。
+          # Runner.app 内的 framework 含 Versions/Current、Headers 等链接，
+          # 它们一旦被解引用成实体副本，产出的 IPA 结构就不合法：
+          # 装机时表现为 "无法安装" 或装完闪退，且报错完全指不到打包这一步。
+          SRC_LINKS=$(find Runner.app -type l | wc -l | tr -d ' ')
+          DST_LINKS=$(find Payload/Runner.app -type l | wc -l | tr -d ' ')
+          echo "符号链接：源 ${SRC_LINKS} 个 / 副本 ${DST_LINKS} 个"
+          if [ "${SRC_LINKS}" != "0" ] && [ "${DST_LINKS}" != "${SRC_LINKS}" ]; then
+            echo "::error title=符号链接丢失::复制后链接数从 ${SRC_LINKS} 变成 ${DST_LINKS}，IPA 会不可用"
+            exit 1
+          fi
+
+          # -y 必须保留：把符号链接按链接存储，不解引用。
+          # -X 剥离扩展属性，避免产生 __MACOSX 冗余条目干扰部分安装工具。
+          zip -r -y -q -X "${IPA_NAME}" Payload
+
+          # 结构自检：IPA 内必须能找到主二进制
+          unzip -l "${IPA_NAME}" | grep -q "Payload/Runner.app/Runner" \
+            || { echo "::error title=IPA 结构异常::打包后的 IPA 中找不到 Payload/Runner.app/Runner"; exit 1; }
+
+          # 归档侧再确认一次符号链接存活（zipinfo 长格式中链接条目以 'l' 开头）
+          ZIP_LINKS=$(unzip -Z "${IPA_NAME}" | grep -c '^l' || true)
+          echo "归档内符号链接条目：${ZIP_LINKS} 个"
+          if [ "${SRC_LINKS}" != "0" ] && [ "${ZIP_LINKS}" = "0" ]; then
+            echo "::warning title=归档内未见符号链接::若侧载时提示应用损坏，请在 workflow_dispatch 里开启 strip-signatures 后重跑"
+          fi
+
+          SIZE=$(du -h "${IPA_NAME}" | cut -f1)
+          echo "size=${SIZE}" >> "$GITHUB_OUTPUT"
+          ls -lh "${IPA_NAME}"
+
+          {
+            echo "### 📦 未签名 IPA 已生成"
+            echo ""
+            echo "| 项目 | 值 |"
+            echo "|---|---|"
+            echo "| 文件 | \`${IPA_NAME}\` |"
+            echo "| 应用版本 | \`${{ steps.version.outputs.version }}\` |"
+            echo "| 构建号 | \`${{ github.run_number }}\` |"
+            echo "| Flutter | \`${FLUTTER_VERSION}\` |"
+            echo "| Bundle ID | \`${IOS_ORG}.movieHub\` |"
+            echo "| 大小 | ${SIZE} |"
+            echo "| 签名状态 | ❌ 未签名 —— 需自签后才能安装 |"
+            echo ""
+            echo "> ⚠️ GitHub 下载的 Artifact 是 **.zip**，要解压一次才能拿到 .ipa。"
+            echo "> 安装方式（TrollStore / AltStore / Sideloadly）见 \`docs/BUILD_AND_RELEASE.md\`。"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 上传 IPA 产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: movie_hub-ios-unsigned-${{ steps.version.outputs.version }}
+          path: ${{ env.APP_DIR }}/${{ env.IPA_NAME }}
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: 上传 dSYM（崩溃符号化用）
+        uses: actions/upload-artifact@v4
+        continue-on-error: true
+        with:
+          name: movie_hub-ios-dsym-${{ steps.version.outputs.version }}
+          path: ${{ env.APP_DIR }}/Runner.app.dSYM
+          retention-days: 30
+          if-no-files-found: ignore
+
+  release:
+    name: 发布到 GitHub Release
+    needs: [build-ios]
+    # 只有推送 v* 标签时才发布，普通分支推送/PR 只出 Artifact。
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: 下载构建产物
+        uses: actions/download-artifact@v4
+        with:
+          pattern: movie_hub-ios-unsigned-*
+          path: dist
+          merge-multiple: true
+
+      - name: 列出待发布文件
+        run: ls -lh dist
+
+      - name: 创建 Release 并附加 IPA
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.ipa
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          draft: false

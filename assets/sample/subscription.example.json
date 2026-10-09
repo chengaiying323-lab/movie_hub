@@ -1,0 +1,135 @@
+{
+  "protocol": "moviehub/v1",
+  "id": "official-demo-pack",
+  "name": "示例源合集（仅作协议演示，站点地址为占位）",
+  "version": 3,
+  "updated_at": "2026-10-09T10:00:00Z",
+  "author": "MovieHub",
+  "comment": "本示例仅用于说明字段语义。请勿直接使用示例域名；实际部署时替换为你自行维护的源站。",
+
+  "sources": [
+    {
+      "key": "maccms_demo_a",
+      "name": "演示源 A（苹果CMS 标准）",
+      "kind": "maccms",
+      "api": "https://demo-a.example.com/api.php/provide/vod/",
+      "enabled": true,
+      "priority": 10,
+      "searchable": true,
+      "detailable": true,
+      "timeout_ms": 8000,
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+        "Referer": "https://demo-a.example.com/"
+      },
+      "endpoints": {
+        "search": "{api}?ac=videolist&wd={wd}&pg={pg}",
+        "detail": "{api}?ac=videolist&ids={id}",
+        "category": "{api}?ac=videolist&t={tid}&pg={pg}"
+      },
+      "field_map": {
+        "list": "list",
+        "id": "vod_id",
+        "name": "vod_name",
+        "poster": "vod_pic",
+        "type_name": "type_name",
+        "year": "vod_year",
+        "area": "vod_area",
+        "remarks": "vod_remarks",
+        "actors": "vod_actor",
+        "directors": "vod_director",
+        "description": "vod_content",
+        "play_from": "vod_play_from",
+        "play_url": "vod_play_url"
+      },
+      "playlist": {
+        "source_separator": "$$$",
+        "episode_separator": "#",
+        "name_separator": "$",
+        "reverse_episodes": false,
+        "flag_names": {
+          "lzm3u8": "量子线路",
+          "sdm3u8": "闪电线路"
+        }
+      },
+      "group": "演示分组",
+      "comment": "标准苹果CMS v10 采集接口"
+    },
+
+    {
+      "key": "json_demo_b",
+      "name": "演示源 B（自建 JSON API，字段名完全不同）",
+      "kind": "tvbox_json",
+      "api": "https://demo-b.example.com/api/v1",
+      "enabled": true,
+      "priority": 20,
+      "searchable": true,
+      "detailable": true,
+      "timeout_ms": 10000,
+      "endpoints": {
+        "search": "{api}/search?q={wd}&page={pg}",
+        "detail": "{api}/video/{id}",
+        "category": "{api}/category/{tid}?page={pg}"
+      },
+      "field_map": {
+        "list": "data.items",
+        "id": "vid",
+        "name": "title",
+        "poster": "cover.url",
+        "backdrop": "cover.wide",
+        "type_name": "category_name",
+        "categories": "tags",
+        "year": "release.year",
+        "score": "rating",
+        "description": "summary",
+        "play_from": "playback.from",
+        "play_url": "playback.url"
+      },
+      "playlist": {
+        "source_separator": "$$$",
+        "episode_separator": "#",
+        "name_separator": "$"
+      },
+      "group": "演示分组",
+      "comment": "演示「只改 JSON 配置即可适配全新字段结构」的能力"
+    },
+
+    {
+      "key": "json_demo_c",
+      "name": "演示源 C（结构化选集，非播放串）",
+      "kind": "tvbox_json",
+      "api": "https://demo-c.example.com/api",
+      "enabled": true,
+      "priority": 30,
+      "searchable": true,
+      "detailable": true,
+      "timeout_ms": 8000,
+      "endpoints": {
+        "search": "{api}/vod?wd={wd}&pg={pg}",
+        "detail": "{api}/vod/detail?id={id}"
+      },
+      "field_map": {
+        "list": "data.list",
+        "id": "vod_id",
+        "name": "vod_name",
+        "poster": "vod_pic",
+        "remarks": "vod_remarks",
+        "description": "vod_content"
+      },
+      "comment": "该源不使用播放串，而是 episodes:[{name,url}] 结构，由解析器自动识别"
+    },
+
+    {
+      "key": "spider_demo_d",
+      "name": "演示源 D（TVBox spider 型）",
+      "kind": "tvbox_spider",
+      "api": "csp_ExampleSite",
+      "enabled": false,
+      "priority": 999,
+      "searchable": true,
+      "detailable": true,
+      "ext": "https://demo-d.example.com/spider.jar;md5;0123456789abcdef0123456789abcdef",
+      "comment": "客户端无 JS/Java 运行时，该类源会被自动跳过导入（skipped）"
+    }
+  ]
+}

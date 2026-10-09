@@ -1,0 +1,51 @@
+# =============================================================================
+# MovieHub · 行尾与二进制规则
+# =============================================================================
+# 存在的理由只有一个：**别让 CRLF 溜进 GitHub Actions 的 YAML**。
+#
+# 工作流里的多行脚本（`run: |`）会被 runner 当作 bash 执行。若文件带 CRLF，
+# 每行末尾都会多一个 \r，bash 会把它当成命令名的一部分，报出
+# `line N: $'\r': command not found` 这种和代码毫无关系的错误。
+# 本地 Windows 检出时 Git 默认可能把 LF 换成 CRLF，所以这里显式钉死。
+# =============================================================================
+
+# 默认：文本文件在仓库里一律用 LF 存储
+* text=auto eol=lf
+
+# ── 必须 LF ─────────────────────────────────────────────────────────────────
+*.sh        text eol=lf
+*.yml       text eol=lf
+*.yaml      text eol=lf
+*.dart      text eol=lf
+*.py        text eol=lf
+*.json      text eol=lf
+.gitignore  text eol=lf
+.gitattributes text eol=lf
+
+# ── 保持 CRLF ───────────────────────────────────────────────────────────────
+# 这两个是给 Windows 原生工具吃的（Windows PowerShell 5.1 / Inno Setup 6），
+# 它们还要求文件带 UTF-8 BOM。BOM 由文件本身携带，Git 不会动它。
+*.ps1       text eol=crlf
+*.iss       text eol=crlf
+*.bat       text eol=crlf
+*.cmd       text eol=crlf
+
+# ── 二进制（禁止任何行尾转换） ───────────────────────────────────────────────
+*.png       binary
+*.jpg       binary
+*.jpeg      binary
+*.gif       binary
+*.webp      binary
+*.ico       binary
+*.ttf       binary
+*.otf       binary
+*.woff      binary
+*.woff2     binary
+*.zip       binary
+*.ipa       binary
+*.exe       binary
+*.dll       binary
+
+# ── 语言统计：这些不算「源码」 ───────────────────────────────────────────────
+*.md        linguist-documentation
+docs/**     linguist-documentation

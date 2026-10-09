@@ -1,0 +1,59 @@
+name: movie_hub
+description: 跨平台影视聚合播放客户端（Windows 桌面端 / iOS 移动端）
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.4.0 <4.0.0'
+  flutter: '>=3.22.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # ── 状态管理 ──────────────────────────────────────────────
+  flutter_riverpod: ^2.5.1
+
+  # ── 领域层注解（保持 domain 层不依赖 Flutter） ────────────
+  meta: ^1.11.0
+
+  # ── 网络 / 序列化 ────────────────────────────────────────
+  dio: ^5.4.3+1
+  crypto: ^3.0.3
+  collection: ^1.18.0
+
+  # ── 本地持久化 ──────────────────────────────────────────
+  # shared_preferences：数据源配置 / 订阅 / 搜索历史等「小、扁平、整块读写」的数据
+  shared_preferences: ^2.2.3
+  # hive：观看记录这类「条目多、需按 key 增量更新与排序查询」的数据
+  #   选型说明见 README「第三阶段」：纯 Dart、全平台（Windows/iOS）零配置，
+  #   且使用**手写 TypeAdapter**，因此不需要 build_runner 代码生成。
+  hive: ^2.2.3
+  hive_flutter: ^1.1.0
+  path_provider: ^2.1.3
+
+  # ── 播放内核（Windows / iOS 均为 libmpv） ────────────────
+  # 注意：media_kit 在 **iOS 上也是 libmpv**（media_kit_libs_ios_video
+  # 打包的是 MPVKit），不是 AVPlayer/AVFoundation 后端。
+  # 由此带来两条硬约束：iOS 最低版本 13.0（Podfile 与 pbxproj 要同时改）、
+  # 以及系统级画中画（PiP）不可用。详见 docs/BUILD_AND_RELEASE.md。
+  media_kit: ^1.1.10
+  media_kit_video: ^1.2.4
+  media_kit_libs_video: ^1.0.4
+
+  # ── 平台适配 ────────────────────────────────────────────
+  window_manager: ^0.3.9      # Windows 窗口尺寸/最小尺寸控制 + 播放页全屏切换
+  # 播放期间防息屏：一集 45 分钟必然超过系统默认息屏时间，
+  # 不持有 wakelock 会导致"看着看着屏幕黑了"。
+  wakelock_plus: ^1.2.5
+  cupertino_icons: ^1.0.8
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/sample/
