@@ -42,7 +42,10 @@ class WatchHistoryLocalDataSource {
     // 两者都在应用私有空间内，无需额外权限声明。
     await Hive.initFlutter();
     if (!Hive.isAdapterRegistered(kWatchRecordTypeId)) {
-      Hive.registerAdapter(const WatchRecordAdapter());
+      // 不带 `const`：`TypeAdapter`（hive 2.2.3）没有声明构造器，
+      // 其隐式默认构造器是非 const 的，`WatchRecordAdapter` 因此也
+      // 不能是 const 构造器。详见该类的文档注释。
+      Hive.registerAdapter(WatchRecordAdapter());
     }
     _initialized = true;
   }

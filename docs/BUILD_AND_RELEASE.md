@@ -830,6 +830,11 @@ entitlements。有三类 entitlement 在 iOS 15 / A12+ 上被禁用，带上会*
 | Dart 编译：`Final field 'x' is not initialized` **外加**调用点 `No named parameter with the name 'x'` | 别顺着这两条去改字段和调用点 —— 真正的原因是**构造器签名本身非法**：把可选位置参数 `[...]` 和命名参数 `{...}` 混用了。Dart 明确禁止（ECMA-408 §9.2：*optional parameters can be specified either as a set of named parameters or as a list of positional parameters, **but not both***）。解析器丢掉 `{...}` 那一半，才连带报出"字段没初始化"和"没有这个命名参数"。修法是让 `message` 当必填位置参数，`url` / `cause` / `stackTrace` 走命名参数 |
 | Dart 编译：`The type 'DioExceptionType' is not exhaustively matched by the switch cases` | `pubspec.yaml` 写的是 `dio: ^5.4.3+1`，而仓库**没有 `pubspec.lock`** ⇒ CI 每次解析到最新 5.x（5.8 起多了 `transformTimeout`）。**不要**去逐个补枚举成员，直接在 `switch` 里加 `default:` 兜底，这样上游再加枚举值也不会编译失败 |
 | Dart 编译：`The value 'null' can't be returned from a function with return type 'bool'` | 返回类型写窄了。名字叫 `xxxOrNull` 就该声明成 `bool?`；**别改成返回 `false`** —— 那会把"字段缺失 / 格式不认识"和"明确为假"混成同一种结果，调用方再也分不清 |
+| Dart 编译：`A constant constructor can't call a non-constant super constructor`（`TypeAdapter` / `ChangeNotifier` / `Notifier` 等基类） | 这些三方基类**没有声明构造器**，隐式默认构造器就**不是** const（隐式构造器只有类里显式写了 `const` 才是 const）。所以子类也不能写 `const XxxAdapter()`。改成普通构造器，**并连同调用点一起去掉 `const`**（`Hive.registerAdapter(const XxxAdapter())` 同样要改）。判断依据：去 `~/.pub-cache`（或 `.dart_tool/package_config.json` 指向的目录）打开该基类源码，看有没有 `const` 构造器 —— 别猜 |
+| Dart 编译：`Duration used in 'for' loop` | `media_kit` 的 `PlayerStream.buffer` 类型是 **`Stream<Duration>`**（1.2.6 `lib/src/models/player_stream.dart:53`，注释原文 *Current buffer position. … how much of the stream has been decoded & cached by the demuxer*），它是**单点位置**不是区间列表。直接 `streams.buffer.listen((buffered) => _emit(buffered: buffered))` 即可，不能遍历 |
+| Dart 编译：`The method 'setProperty' isn't defined for the class 'Player'` | media_kit 的 `Player` **确实没有** `setProperty`；它是 **`NativePlayer`** 的公开成员（1.2.6 `lib/src/player/native/player/real.dart:1223`，签名 `Future<void> setProperty(String property, String value, {bool waitForInitialization = true})`）。而 `Player.platform` 是 **public 可空**的 `PlatformPlayer?`（`player.dart:125`），`NativePlayer` 又经 `media_kit.dart → native/player/player.dart → real.dart` 导出。所以正确写法是 `final p = player.platform; if (p is NativePlayer) await p.setProperty(...);`。**用 `is` 不要用 `as`**：Web 端该字段是 `WebPlayer`，`as` 会抛 `TypeError`。另外 `demuxer-max-bytes` 虽可由 `PlayerConfiguration.bufferSize` 覆盖，但该字段会把**前向与回退缓冲灌成同一个值**（`real.dart:2425-2426`），表达不了 64MiB / 16MiB 的差异 |
+| Dart 编译：`Too many positional arguments`（形如 `_matches(x, 'a', 'b', 'c', 'd', 'e')`） | 可选位置参数 `[String? b, String? c, String? d]` 的个数**不是**"至少能收几个"而是"最多收几个"，调用方多传一个就是编译错误。分组关键词数量不一致时（3~5 个），签名就该改成 `List<String> needles`，从根上免疫这类错误 |
+| Dart 编译：`A value of type 'bool?' can't be assigned to a variable of type 'bool'` | 先分清是哪一种：① 参数本身就是 `bool?`（可选命名参数没给默认值）→ 用 `?? false` 兜底；② 值来自 Provider / 返回值 → **不要就地盲目 `?? false`**：若上游声明是**非空**类型，`?? false` 是死代码，分析器会报 `dead_null_aware_expression`。稳妥写法是抽一个 `bool _resolveFlag(bool? override, bool? fallback) => override ?? fallback ?? false;` —— 形参声明成可空后，上游无论可空与否这段代码都成立且无告警 |
 | 报 `ios/Podfile 文件不存在` 或 `pod install` 找不到 Podfile | 补丁脚本本应在缺失时自动生成（见 [§1.3](#13-ios-工程补丁同样在云端跑含补出-podfile)）。看「应用 iOS 工程补丁」步骤日志里 `Podfile：` 那段自检输出定位 |
 | `pod install` 报 `Platform :ios, '12.0'` 或部署版本冲突 | Podfile 用了 Flutter 默认模板、没走到我们的补丁。确认工作流里「应用 iOS 工程补丁」在 `pod install` **之前** |
 | `No such module 'Flutter'` | Flutter 版本 < 3.24.4 配 Xcode 16。把 `flutter-version` 改到 3.24.4+ |
@@ -838,6 +843,72 @@ entitlements。有三类 entitlement 在 iOS 15 / A12+ 上被禁用，带上会*
 | `ModuleCache.noindex/Session.modulevalidation` 不存在 | Xcode 15 写的模块缓存被 Xcode 16 读到。工作流每次都是干净环境，不会出现；本地出现就删 `~/Library/Developer/Xcode/DerivedData` |
 | 构建成功但 Artifact 为空 | `flutter build ios` 实际失败了但被吞。翻「构建 iOS（未签名）」那一步的完整日志 |
 | Release 里没有 IPA | tag 不是 `v` 开头（工作流用 `refs/tags/v` 判定） |
+
+---
+
+## 6.1 提交前的本地静态自查（本项目**固定流程**）
+
+### 6.1.1 为什么必须人工做
+
+「本地零环境」策略意味着本地**没有** Flutter / Dart SDK，跑不了 `flutter analyze`；
+而 `tool/verify_structure.py` 只做 A~G **结构级**校验（文件是否存在、类名是否对得上、
+是否混入了 `.g.dart` 之类），**完全不做类型校验**。
+结果是：`verify_structure.py` 全绿 ≠ 能编译。语法/类型错误只会在云端
+CI 的 Dart 编译器（CFE）那里才暴露出来。
+
+所以**每次 push 前**，下面 5 条必须跑一遍。它们的共同特征是：
+全部是"能靠搜索发现、不该靠编译器发现"的低级错误。
+
+### 6.1.2 五条必查项
+
+```bash
+# ① 是否有对非 Iterable 做 for-in（Duration / DateTime / int / enum 值 …）
+grep -rn "for (\s*final\s\+\w\+\s\+in \|for (\s*var\s\+\w\+\s\+in " lib/
+
+# ② 是否有 const 构造器落在「父类非 const」的子类上
+#    先列出所有 const 构造器，再逐个确认其父类（尤其 TypeAdapter / Notifier / State）
+grep -rn "^\s*const [A-Z][A-Za-z0-9_]*(" lib/
+
+# ③ 所有继承三方基类的类声明
+grep -rn "extends \(TypeAdapter\|Notifier\|AsyncNotifier\|FamilyAsyncNotifier\|StateNotifier\|ConsumerWidget\|State<\|ChangeNotifier\)" lib/
+
+# ④ 可选位置参数块的调用点与声明是否一致（多传一个就是编译错误）
+grep -rn "^\s*static bool .*\[String" lib/
+
+# ⑤ 对 Duration / DateTime 误用集合方法（.map / .forEach / .where / .toList …）
+grep -rn "duration\.\(map\|forEach\|where\|toList\|first\|last\)" lib/
+```
+
+### 6.1.3 核对三方 API：**按确切版本读源码，禁止凭记忆**
+
+`pubspec.yaml` 用的是 caret（`^`），仓库又**没有提交 `pubspec.lock`**，
+所以 CI 每次解析到的都是**当时的最新小版本**。要确认某个 API 存在与否：
+
+```bash
+# 1) 查这个约束实际会解析到哪个版本
+curl -sS "https://pub.dev/api/packages/dio" | python -c \
+  "import json,sys; d=json.load(sys.stdin); print(d['latest']['version'])"
+
+# 2) 把「确切版本」的源码抓下来（不要看 main 分支，签名会漂）
+curl -sSL -o pkg.tgz "https://pub.dev/api/archives/<包名>-<确切版本>.tar.gz"
+mkdir pkg && tar xzf pkg.tgz -C pkg
+
+# 3) 在 1) 得到的版本目录里检索目标符号
+grep -rn "setProperty\|class PlayerConfiguration" pkg/lib/
+```
+
+### 6.1.4 本项目已核对过的三方符号（按**实际解析版本**）
+
+| 包 | 解析版本 | 结论 |
+|---|---|---|
+| `media_kit` | 1.2.6 | `Player` **无** `setProperty`；`NativePlayer.setProperty(String, String, {bool waitForInitialization = true})` 存在且公开；`Player.platform` 是 public 可空 `PlatformPlayer?`；`PlayerStream.buffer` 是 `Stream<Duration>`；`PlayerConfiguration` 字段为 `vo/osc/pitch/title/ready/muted/async/libass/libassAndroidFont/libassAndroidFontName/logLevel/bufferSize/protocolWhitelist` |
+| `media_kit_video` | 1.2.5 | `VideoControllerConfiguration` 为 `const` 构造，字段 `vo/hwdec/width/height/scale/enableHardwareAcceleration/androidAttachSurfaceAfterVideoParameters` |
+| `hive` | 2.2.3 | `TypeAdapter<T>` **未声明构造器** ⇒ 隐式默认构造器非 const ⇒ 子类不能写 const 构造器；`BinaryReader.readMap()` 返回 `Map`，与 `WatchRecord.fromMap(Map<dynamic, dynamic>)` 吻合 |
+| `dio` | 5.11.1 | `DioExceptionType` 含 `transformTimeout`（故 `switch` 必须带 `default:`）；`DioException` 命名参数为 `requestOptions`(required)/`response`/`type`/`error`/`stackTrace`/`message`；`BaseOptions` 与 `Options` 的字段均已核对 |
+| `window_manager` | 0.3.9 | `WindowOptions` 是 `const` 构造，含 `size/center/minimumSize/maximumSize/alwaysOnTop/fullScreen/backgroundColor/skipTaskbar/title/titleBarStyle/windowButtonVisibility`；`waitUntilReadyToShow([WindowOptions?, VoidCallback?])` |
+| `wakelock_plus` | 1.2.5 | `WakelockPlus.enable()` / `disable()` |
+| `shared_preferences` | 2.2.3 | `getInstance()` / `getStringList` / `setStringList` / `getBool` / `setBool` / `remove` |
+| `crypto` | 3.0.3 | `md5.convert(utf8.encode(s)).toString()`（需同时 `import 'dart:convert'`） |
 
 ---
 

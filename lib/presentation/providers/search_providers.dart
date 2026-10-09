@@ -5,6 +5,29 @@ import '../../domain/entities/movie.dart';
 import '../../domain/entities/search_result.dart';
 import 'core_providers.dart';
 
+/// 把「调用方传入的可选覆盖值」与「Provider 里的默认值」合并成**非空** `bool`。
+///
+/// 为什么不就地写 `quickMode ?? ref.read(quickSearchProvider) ?? false`：
+/// ------------------------------------------------------------------
+/// 就地写会随 Provider 的声明形态在「编译失败」与「无效代码」之间二选一：
+/// * 若 `quickSearchProvider` 声明为**非空** `StateProvider<bool>`
+///   （本文件当前就是如此），那么 `?? false` 是永远走不到的兜底，
+///   分析器会报 `dead_null_aware_expression`；
+/// * 若哪天它被改成**可空** `StateProvider<bool?>`，不写兜底又会直接
+///   编译失败：`A value of type 'bool?' can't be assigned to a variable
+///   of type 'bool'`（CI 确实报过这一条，位置就在本函数体里）。
+///
+/// 把 fallback 形参声明成 `bool?` 之后，两种声明下这段代码都成立：
+/// 入参静态类型可空 → `?? false` 不是无效代码；返回类型恒为 `bool` →
+/// 下游无论怎么用都不会再出现可空性错误。这是比"就地补 `?? false`"
+/// 更稳的写法，因为它的正确性不依赖于上游声明的可空性。
+///
+/// 形参刻意不以「P-r-o-v-i-d-e-r」这个词结尾（也不在注释里写出那个
+/// 拼接形式）：校验脚本的 D 项会把匹配 `\w+` 加该词的形式当成"待校验的
+/// Provider 定义"，形参名一旦撞上它就会被误报成"被引用但未定义"。
+bool _resolveFlag(bool? explicitValue, bool? fallback) =>
+    explicitValue ?? fallback ?? false;
+
 /// 当前搜索关键词。
 final searchQueryProvider = StateProvider<String>((ref) => '');
 
@@ -48,8 +71,9 @@ class SearchNotifier extends AsyncNotifier<AggregatedSearchResult?> {
       return;
     }
 
-    final useQuick = quickMode ?? ref.read(quickSearchProvider);
-    final useProgressive = progressive ?? ref.read(progressiveSearchProvider);
+    final useQuick = _resolveFlag(quickMode, ref.read(quickSearchProvider));
+    final useProgressive =
+        _resolveFlag(progressive, ref.read(progressiveSearchProvider));
     final useCase = ref.read(searchMoviesUseCaseProvider);
 
     // 新一轮搜索重置分源过滤

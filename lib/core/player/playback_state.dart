@@ -175,19 +175,19 @@ class PlaybackFailure {
 
     PlaybackFailureKind kind;
 
-    if (_matches(lower, '403', 'forbidden', 'access denied', 'unauthorized', '401')) {
+    if (_matches(lower, <String>['403', 'forbidden', 'access denied', 'unauthorized', '401'])) {
       kind = PlaybackFailureKind.forbidden;
-    } else if (_matches(lower, '404', 'not found', 'no such file', '410')) {
+    } else if (_matches(lower, <String>['404', 'not found', 'no such file', '410'])) {
       kind = PlaybackFailureKind.notFound;
-    } else if (_matches(lower, 'timed out', 'timeout', 'connection reset', 'no route')) {
+    } else if (_matches(lower, <String>['timed out', 'timeout', 'connection reset', 'no route'])) {
       kind = PlaybackFailureKind.timeout;
-    } else if (_matches(lower, 'could not resolve', 'network is unreachable', 'failed to connect')) {
+    } else if (_matches(lower, <String>['could not resolve', 'network is unreachable', 'failed to connect'])) {
       kind = PlaybackFailureKind.network;
-    } else if (_matches(lower, 'unsupported', 'not supported', 'unknown format', 'no video')) {
+    } else if (_matches(lower, <String>['unsupported', 'not supported', 'unknown format', 'no video'])) {
       kind = PlaybackFailureKind.unsupported;
-    } else if (_matches(lower, 'decode', 'decoding', 'hwdec', 'codec')) {
+    } else if (_matches(lower, <String>['decode', 'decoding', 'hwdec', 'codec'])) {
       kind = PlaybackFailureKind.decode;
-    } else if (_matches(lower, 'invalid', 'malformed', 'not a playlist')) {
+    } else if (_matches(lower, <String>['invalid', 'malformed', 'not a playlist'])) {
       kind = PlaybackFailureKind.unsupported;
     } else {
       kind = PlaybackFailureKind.unknown;
@@ -216,9 +216,16 @@ class PlaybackFailure {
   }
 
   /// 关键词命中：既要匹配数字码，也要匹配文字描述。
-  static bool _matches(String haystack, String a, [String? b, String? c, String? d]) {
-    for (final needle in <String?>[a, b, c, d]) {
-      if (needle != null && needle.isNotEmpty && haystack.contains(needle)) {
+  ///
+  /// 参数形态是 `List<String>` 而不是 `String a, [String? b, String? c, String? d]`：
+  /// 各分组的关键词个数并不一致（最少 3 个、最多 5 个），用可选位置参数
+  /// 就必须让签名去适配**最长**的那一组，调用方少写一个不多报错、
+  /// 多写一个则直接编译失败（本项目就踩过：178 行传了 5 个关键词，
+  /// 而声明只收 4 个 → `Too many positional arguments`）。
+  /// List 形态对"多一个少一个"天然免疫，且一眼能数清关键词个数。
+  static bool _matches(String haystack, List<String> needles) {
+    for (final needle in needles) {
+      if (needle.isNotEmpty && haystack.contains(needle)) {
         return true;
       }
     }

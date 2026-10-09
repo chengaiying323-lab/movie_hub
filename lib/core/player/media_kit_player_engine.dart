@@ -51,10 +51,14 @@ class MediaKitPlayerEngine implements PlayerEngine {
       : _config = config,
         _hardwareAccelerationOn = config.hardwareAcceleration {
     _player = Player(
-      // 只传 title：它决定系统媒体控制中心里显示的名字。
-      // 缓冲 / 超时之类的策略不在这里配，而是统一走下面的
-      // `setProperty` —— `PlayerConfiguration` 的字段随版本变动较大，
-      // 而 mpv 属性名是稳定接口（见 [_applyKernelProperties]）。
+      // 这里只传 title：它决定系统媒体控制中心里显示的名字。
+      // 缓冲 / 超时之类的策略不在这里配，原因有二：
+      // 1. `PlayerConfiguration` 只覆盖一部分策略（没有 network-timeout、
+      //    stream-lavf-o），而 `bufferSize` 又会把前向与回退缓冲
+      //    灌成同一个值，表达不了 64MiB / 16MiB 的差异；
+      // 2. 策略需要**运行期可改**（解码失败要关硬解重试），
+      //    构造期配置做不到。
+      // 因此只保留 title，其余统一走 [_applyKernelProperties]。
       configuration: const PlayerConfiguration(title: AppConstants.appName),
     );
     _controller = VideoController(
@@ -268,24 +272,97 @@ class MediaKitPlayerEngine implements PlayerEngine {
 
   // ── 初始化细节 ──────────────────────────────────────────
 
+  /// 原生内核（libmpv）实现，拿不到时返回 `null`。
+  ///
+  /// 为什么需要它 —— 这是本项目踩过的一个真实 API 陷阱：
+  /// ------------------------------------------------------------------
+  /// media_kit 1.2.6 的 `Player`（`lib/src/player/player.dart`）**没有**
+  /// `setProperty` 方法。它的公开方法只有
+  /// `open / stop / play / pause / playOrPause / add / remove / next /
+  /// previous / jump / move / seek / setPlaylistMode / setVolume / setRate /
+  /// setPitch / setShuffle / setAudioDevice / setVideoTrack / setAudioTrack /
+  /// setSubtitleTrack / screenshot`。
+  ///
+  /// `setProperty` 是 **`NativePlayer`** 的公开成员，签名（已按 1.2.6
+  /// `lib/src/player/native/player/real.dart:1223` 原文核对）为：
+  /// ```dart
+  /// Future<void> setProperty(
+  ///   String property,
+  ///   String value, {
+  ///   bool waitForInitialization = true,
+  /// })
+  /// ```
+  /// 官方文档注释是「Sets property for the internal libmpv instance of
+  /// this [Player]. Please use this method only if you know what you are
+  /// doing」，并直接指向 mpv 的 options / properties 手册 —— 也就是说
+  /// 这正是"要下发 mpv 属性"时的官方出口，只是入口在 [NativePlayer] 上。
+  ///
+  /// 而 `Player.platform`（`lib/src/player/player.dart:125`）声明为
+  /// **public 可空**的 `PlatformPlayer? platform;`，所以可以安全降型。
+  ///
+  /// 用 `is` 而不是 `as`：Web 端该字段是 `WebPlayer`，
+  /// `as NativePlayer` 会抛 `TypeError`，而 `is` 只是安静地返回 `null`，
+  /// 让本内核在 Web 上退化为"只播不调优"而不是崩溃。
+  NativePlayer? get _native {
+    final platform = _player.platform;
+    return platform is NativePlayer ? platform : null;
+  }
+
+  /// 向原生内核下发一条 mpv 属性（拿不到原生实现时静默跳过）。
+  void _setProperty(String property, String value) {
+    final native = _native;
+    if (native == null) return;
+    unawaited(native.setProperty(property, value));
+  }
+
   /// 把策略配置落到 mpv 原生属性上。
   ///
-  /// 为什么用 [Player.setProperty] 而不是全塞进 `VideoControllerConfiguration`：
-  /// 一是该类的字段随版本变动较大，直接写属性更稳定；
-  /// 二是属性可以**运行期修改**（如解码失败后关掉 hwdec 再重开），
-  /// 而 `VideoControllerConfiguration` 只在构造时生效，改它得重建整个渲染面。
+  /// 为什么这几项走 mpv 属性而不是 `PlayerConfiguration`：
+  /// ------------------------------------------------------------------
+  /// 1. `network-timeout`、`stream-lavf-o` 在 `PlayerConfiguration`
+  ///    （1.2.6，字段仅 `vo / osc / pitch / title / ready / muted / async /
+  ///    libass / libassAndroidFont / libassAndroidFontName / logLevel /
+  ///    bufferSize / protocolWhitelist`）里**没有对应字段**；
+  /// 2. 解复用缓冲虽有 `PlayerConfiguration.bufferSize`，但它内部是
+  ///    （`native/player/real.dart:2425-2426`）：
+  ///
+  ///    ```dart
+  ///    'demuxer-max-bytes':      configuration.bufferSize.toString(),
+  ///    'demuxer-max-back-bytes': configuration.bufferSize.toString(),
+  ///    ```
+  ///
+  ///    ——**同一个值同时灌给前向与回退缓冲**，而我们前向要 64MiB、
+  ///    回退只要 16MiB，用它反而丢掉了差异化配置；
+  /// 3. 硬解开关在构造期由 `VideoControllerConfiguration
+  ///    .enableHardwareAcceleration`（官方字段，已在构造函数里给出）负责，
+  ///    但**解码失败后要运行期关掉硬解再重试**，这一点只有 mpv 属性
+  ///    能做到 —— `VideoControllerConfiguration` 是构造期配置，
+  ///    改它必须重建整个渲染面。
+  ///
+  /// 属性 vs 配置的取舍是刻意的：**策略配置能被运行期修改**，
+  /// 而上表那三项必须能改。
   void _applyKernelProperties() {
+    final native = _native;
+    if (native == null) return;
+
     // libmpv 默认无限等待网络，弱网下表现为"永久缓冲"而非报错。
-    unawaited(_player.setProperty('network-timeout', '${_config.networkTimeoutSec}'));
-    unawaited(_player.setProperty('demuxer-max-bytes', _config.demuxerMaxBytes));
-    unawaited(_player.setProperty('demuxer-max-back-bytes', _config.demuxerMaxBackBytes));
+    unawaited(native.setProperty(
+      'network-timeout',
+      '${_config.networkTimeoutSec}',
+    ));
+    // 注意：值必须是 mpv 认的尺寸字符串（64MiB），不是字节数。
+    unawaited(native.setProperty('demuxer-max-bytes', _config.demuxerMaxBytes));
+    unawaited(native.setProperty(
+      'demuxer-max-back-bytes',
+      _config.demuxerMaxBackBytes,
+    ));
     // 允许 lavf 层对 HTTP 分片做透明重连，兜住 HLS 的瞬时断流。
-    unawaited(_player.setProperty(
+    unawaited(native.setProperty(
       'stream-lavf-o',
       'reconnect=1,reconnect_streamed=1,reconnect_delay_max=4',
     ));
     if (!_config.hardwareAcceleration) {
-      unawaited(_player.setProperty('hwdec', 'no'));
+      unawaited(native.setProperty('hwdec', 'no'));
     }
   }
 
@@ -302,25 +379,21 @@ class MediaKitPlayerEngine implements PlayerEngine {
       streams.volume.listen((v) => _emit(volume: v)),
       streams.width.listen((w) => _emit(videoWidth: w)),
       streams.height.listen((h) => _emit(videoHeight: h)),
-      streams.buffer.listen((ranges) {
-        // 这里刻意不写显式类型标注：`buffer` 下发的是内核自己的缓冲区间类型，
-        // 由类型推断处理即可，避免把内核的辅助类型名写进我们的代码里
-        // —— 那会让"换内核"多出一处需要改的地方。
-        final position = _state.value.position;
-        var best = Duration.zero;
-        for (final range in ranges) {
-          // 取"当前位置所在区间"的末尾。mpv 可能同时给出多个不连续区间
-          // （seek 之后旧缓存与新区块并存），无脑取最后一个会画错进度条。
-          if (position >= range.start && position <= range.end) {
-            best = range.end;
-            break;
-          }
-          if (range.start <= position && range.end > best) {
-            best = range.end;
-          }
-        }
-        _emit(buffered: best);
-      }),
+      // `streams.buffer` 的元素类型是 **`Duration`**，不是区间列表。
+      // 依据 media_kit 1.2.6 `lib/src/models/player_stream.dart:51-53`：
+      //
+      //   /// Current buffer position.
+      //   /// This indicates how much of the stream has been decoded & cached
+      //   /// by the demuxer.
+      //   final Stream<Duration> buffer;
+      //
+      // 也就是说，内核已经把"缓冲到哪里了"算成了一个**单点位置**，
+      // 这里不需要（也不能）再去遍历它 —— 曾经的实现拿它当
+      // `List<Range>` 做 for-in，而 `Duration` 没有 `iterator`，
+      // 直接编译失败（Duration used in 'for' loop）。
+      // 它的语义与 `PlaybackState.buffered`（进度条的浅色预览段）完全一致，
+      // 直通即可。
+      streams.buffer.listen((buffered) => _emit(buffered: buffered)),
     ]);
   }
 
@@ -398,9 +471,13 @@ class MediaKitPlayerEngine implements PlayerEngine {
 
     // 解码失败的首要嫌疑是硬解兼容性：先关硬解，再给一次机会。
     // 这一步在重试判定之前做，才能让紧接着的重试用软解跑。
+    //
+    // 运行期改动只能走 mpv 属性（`hwdec`）：
+    // `VideoControllerConfiguration` 是构造期配置，改它得重建渲染面，
+    // 而这里必须在不重建播放器的前提下切到软解。
     if (kind == PlaybackFailureKind.decode && _hardwareAccelerationOn) {
       _hardwareAccelerationOn = false;
-      unawaited(_player.setProperty('hwdec', 'no'));
+      _setProperty('hwdec', 'no');
     }
 
     // 三个条件各管一件事，缺一不可：

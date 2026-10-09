@@ -22,7 +22,29 @@ const int kWatchRecordTypeId = 7;
 /// 相比按字段逐个 `readInt`/`readString`，Map 形态对新增字段天然宽容
 /// —— 少一个键就用默认值，不会抛 `RangeError`。
 class WatchRecordAdapter extends TypeAdapter<WatchRecord> {
-  const WatchRecordAdapter();
+  /// **不能**加 `const`。
+  ///
+  /// hive 2.2.3 的 `TypeAdapter<T>`
+  /// （`lib/src/registry/type_adapter.dart`）**没有声明任何构造器**：
+  ///
+  /// ```dart
+  /// @immutable
+  /// abstract class TypeAdapter<T> {
+  ///   int get typeId;
+  ///   T read(BinaryReader reader);
+  ///   void write(BinaryWriter writer, T obj);
+  /// }
+  /// ```
+  ///
+  /// 隐式默认构造器**只有在类里显式写了 `const` 时才是 const 的**，
+  /// 这里没有写，所以它是非 const 的。而 Dart 规范禁止
+  /// 「常构造器调用非常量父构造器」，写 `const WatchRecordAdapter()`
+  /// 会直接编译失败：
+  /// `A constant constructor can't call a non-constant super constructor.`
+  ///
+  /// 同理，`Hive.registerAdapter(...)` 的调用点（见
+  /// `watch_history_local_datasource.dart` 的 `initialize()`）也不能带 `const`。
+  WatchRecordAdapter();
 
   @override
   int get typeId => kWatchRecordTypeId;
