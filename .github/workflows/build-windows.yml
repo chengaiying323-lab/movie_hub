@@ -60,7 +60,39 @@ env:
 jobs:
   build-windows:
     name: 构建便携版
-    runs-on: windows-latest
+
+    # ⚠️ 必须钉 windows-2022，不能写 windows-latest。
+    # -----------------------------------------------------------------------
+    # windows-latest 自 2026-06-15 起已经切到「Windows Server 2025 + Visual
+    # Studio 2026 (18.5)」。而 Flutter 3.24.5 的
+    # packages/flutter_tools/lib/src/windows/visual_studio.dart 里，
+    # VS 大版本 → CMake 生成器的映射**只认 17**：
+    #
+    #     String? get cmakeGenerator {
+    #       return switch (_majorVersion) {
+    #         17 => 'Visual Studio 17 2022',
+    #         _  => 'Visual Studio 16 2019',   // ← VS 18 落在这里
+    #       };
+    #     }
+    #
+    # 于是 VS 2026 会被算成 'Visual Studio 16 2019'，CMake 报：
+    #     Generator Visual Studio 16 2019 could not find any instance of Visual Studio.
+    #
+    # 两个容易踩空的点：
+    #   1. 设 CMAKE_GENERATOR 环境变量**没有用**。Flutter 在 build_windows.dart
+    #      里是显式 `'-G', generator` 传给 cmake 的，会覆盖该环境变量；
+    #      Flutter 官方 issue #180481 也明确写了 CMAKE_GENERATOR / VSWHERE_ARGS /
+    #      PATH 覆盖都拦不住它。
+    #   2. 在镜像上再装一个 VS 2022 也**没有用**。Flutter 只挑"最新"的那个，
+    #      有 VS 2026 时一定选 VS 2026（同上 issue #180481）。
+    #
+    # 所以只能换镜像。GitHub 官方给出的规避方式就是这一句：
+    #     "To continue using Visual Studio 2022, you can use the Windows-2022 Image."
+    # windows-2022 带的是 VS 2022 (17.14)，正好映射到 'Visual Studio 17 2022'。
+    #
+    # 退出条件：等 Flutter 升到 3.39.0+（已加入 VS 18 映射）后，可以改回
+    # windows-latest；在那之前别动这一行。
+    runs-on: windows-2022
     timeout-minutes: 45
 
     steps:
@@ -81,6 +113,21 @@ jobs:
           flutter --version
           Write-Host "── PowerShell ──"
           $PSVersionTable.PSVersion
+
+          # 把 vswhere 看到的 Visual Studio 实例打出来。
+          # Flutter 的 Windows 构建会把 VS 大版本号映射成 CMake 生成器
+          # （17 → 'Visual Studio 17 2022'，其余一律落到 'Visual Studio 16 2019'），
+          # 所以「VS 大版本是几」直接决定编译能不能起来。将来镜像再漂移时，
+          # 有了这段日志就不必再从 CMake 的报错反推。
+          Write-Host "── Visual Studio（vswhere）──"
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          if (Test-Path $vswhere) {
+            Write-Host "vswhere: $vswhere"
+            & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property displayName
+            & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationVersion
+          } else {
+            Write-Host "vswhere.exe 未找到（$vswhere）"
+          }
 
       - name: 读取应用版本号
         id: version

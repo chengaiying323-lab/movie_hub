@@ -1138,7 +1138,7 @@ iOS 包**只能**走云端（Windows 无 Xcode）。
 
 | 平台      | 说明                                                                                                                                                                                                                     |
 | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Windows | 需启用开发者模式（`window_manager` 依赖）；窗口 1280×820，最小 960×640；`media_kit` 使用 libmpv。**编译需 VS 2022「使用 C++ 的桌面开发」工作负载；便携版运行需 VC++ 2015-2022 Redistributable (x64)**                                                               |
+| Windows | 需启用开发者模式（`window_manager` 依赖）；窗口 1280×820，最小 960×640；`media_kit` 使用 libmpv。**编译需 VS 2022「使用 C++ 的桌面开发」工作负载（CI 因此固定用 `windows-2022` 镜像，不用 `windows-latest`）；便携版运行需 VC++ 2015-2022 Redistributable (x64)**                                                               |
 | iOS     | `http` 明文地址必须在 `Info.plist` 配置 ATS 例外；`SafeArea` 已适配灵动岛与 Home 指示条；**最低系统版本 13.0（Podfile 与 pbxproj 要同时改）**                                                                                                              |
 | 播放内核    | Windows / iOS **都是 libmpv**（iOS 上是 MPVKit，不是 AVPlayer）。首次启动会加载原生库（Windows: `libmpv-2.dll` 全家桶），`PlayerBootstrap.ensureInitialized()` 已在 `main()` 中早于 `runApp()` 执行；播放页持 `WakelockPlus` 防息屏。**系统级画中画（PiP）不可用**，原因见 §7.2 |
 | 网络层     | 部分源站返回 GBK，`HttpService.decodeBody` 已留升级位（引入 `fast_gbk` 后两行接入）                                                                                                                                                         |
@@ -1235,7 +1235,10 @@ python tool/verify_structure.py
   **构建前按需生成 `ios/` 脚手架并打 iOS 补丁**，出**未签名** `.ipa`；
   含符号链接守卫、IPA 结构自检、Artifact 上传、tag 推送自动发 GitHub Release；
   `strip-signatures` 按需剥离内嵌签名
-- `.github/workflows/build-windows.yml`：`windows-latest`，按需生成 `windows/` 脚手架，
+- `.github/workflows/build-windows.yml`：**`windows-2022`**（**不能用 `windows-latest`**——
+  它自 2026-06-15 起是 VS 2026，而 Flutter 3.24.5 只认 VS 2022，会把生成器算成
+  `Visual Studio 16 2019` 导致 CMake 报错；详见 `docs/BUILD_AND_RELEASE.md` §4.9），
+  按需生成 `windows/` 脚手架，
   复用 `tool/package_windows.ps1` 出便携版 zip（可选 Inno Setup 安装包），tag 推送同样发 Release
 - `tool/package_windows.ps1`：一键出 Windows 便携版 zip（含产物完整性校验、
   自动附带「使用说明.txt」说明 VC++ 运行库依赖），`-Installer` 走 Inno Setup 出安装包

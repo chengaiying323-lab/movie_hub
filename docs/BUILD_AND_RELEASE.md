@@ -256,6 +256,50 @@ env:
 
 用脚本的好处是**幂等**、**会自动补出缺失的 Podfile**、且**不会漏掉那三处 configuration**。
 
+### 2.7 iOS 编不过：`volume_controller` 的版本陷阱
+
+**症状**（出现在 Xcode 编译阶段，不是 `pod install` 阶段）：
+
+```
+Swift Compiler Error (Xcode): Cannot find type 'FlutterSceneLifecycleDelegate' in scope
+```
+
+报错文件通常在 `volume_controller-x.y.z` 里。
+
+**根因**：`volume_controller` **不是**本项目的直接依赖，而是 `media_kit_video`
+拖进来的**传递依赖**：
+
+```
+media_kit_video ^1.2.4  →  1.3.1  →  volume_controller ^3.0.2  →  3.4.4
+```
+
+从 **3.4.2** 起 `volume_controller` 开始使用 iOS 的 **UIScene 生命周期协议**
+（`FlutterSceneLifecycleDelegate`），而 CI 用的 Flutter 3.24.5 还没有这个协议。
+
+**为什么 pub 不自动避开**：`volume_controller` 3.4.2–3.4.4 在 pubspec 里
+**谎报** `flutter: '>=3.0.0'`（实际需要 ≥3.38），所以 pub 认为它们可用；
+到 3.5.0 才老实声明 `>=3.38.0`，但那时 pub 又会因 SDK 不符而跳过，
+于是最终停在 3.4.4 —— 恰好是编不过的那一档。
+
+**修法**（已写在 `pubspec.yaml` 里，两处叠加）：
+
+```yaml
+dependencies:
+  media_kit_video: '>=1.2.4 <1.3.0'    # 只有 1.3.x 起才把 volume_controller 提到 ^3.0.2
+
+dependency_overrides:
+  volume_controller: '>=2.0.7 <3.0.0'  # 兜底：显式锁在 2.x
+```
+
+`media_kit_video` 1.2.x 依赖 `volume_controller ^2.0.7`（自己声明的是
+`flutter: >=1.20.0`），整条链不含 UIScene 代码，在 Flutter 3.24.5 上正常。
+
+> 仓库里**没有提交 `pubspec.lock`**（零本地环境路线下没有 `flutter pub get` 的产物），
+> CI 每次都是全新解析依赖 —— 所以版本必须钉在 `pubspec.yaml` 里，指望 lockfile 是记不住的。
+
+**退出条件**：Flutter 升到 **3.38.0+** 后，`volume_controller` 3.5.x / 3.7.x 均可用，
+届时这两条约束都可以撤掉。
+
 ---
 
 ## 3. Windows 打包
@@ -551,7 +595,7 @@ iOS 首次构建设置最慢（要下载 MPVKit 原生库，体积较大），�
 
 ### 4.9 Windows 包的云端构建
 
-`Build Windows (Portable)` 工作流在 `windows-latest` 上做这些事：
+`Build Windows (Portable)` 工作流在 **`windows-2022`** 上做这些事：
 
 1. 装 Flutter（默认 3.24.5）
 2. **按需生成 `windows/` 平台脚手架**（逻辑与 iOS 侧一致，临时目录生成后只拷目录）
@@ -565,6 +609,45 @@ iOS 首次构建设置最慢（要下载 MPVKit 原生库，体积较大），�
 > ⚠️ 目标电脑需要 **Microsoft Visual C++ 2015-2022 可再发行组件 (x64)**。
 > zip 里附带的「使用说明.txt」已写明这一点，让对方装一次即可。
 
+#### 为什么这里是 `windows-2022` 而**不是** `windows-latest`
+
+这一行**不能**换成 `windows-latest`，否则编译必挂。原因是 runner 镜像漂移：
+
+- GitHub 自 **2026-06-15** 起把 `windows-latest` / `windows-2025` 标签切到
+  「Windows Server 2025 + **Visual Studio 2026 (18.5)**」；
+- 而 Flutter 3.24.5 的 `packages/flutter_tools/lib/src/windows/visual_studio.dart`
+  里，VS 大版本 → CMake 生成器的映射**只认 17**：
+
+  ```dart
+  String? get cmakeGenerator {
+    return switch (_majorVersion) {
+      17 => 'Visual Studio 17 2022',
+      _  => 'Visual Studio 16 2019',   // ← VS 18 落在这里
+    };
+  }
+  ```
+
+- 于是 VS 2026 被算成 `'Visual Studio 16 2019'`，CMake 报：
+  `Generator Visual Studio 16 2019 could not find any instance of Visual Studio.`
+
+两个很容易踩空的点：
+
+| 以为有用的做法 | 实际情况 |
+|---|---|
+| 设 `env: CMAKE_GENERATOR: "Visual Studio 17 2022"` | **无效**。Flutter 在 `build_windows.dart` 里是显式 `'-G', generator` 传给 cmake 的，会覆盖这个环境变量。flutter/flutter#180481 也确认 `CMAKE_GENERATOR` / `VSWHERE_ARGS` / PATH 覆盖都拦不住 |
+| 在镜像上再装一个 VS 2022 | **无效**。Flutter 只挑「最新」的那个，有 VS 2026 时一定选 VS 2026 |
+
+GitHub 官方给出的规避方式就是换镜像（runner-images#14017）：
+
+> To continue using Visual Studio 2022, you can use the `windows-2022` Image.
+
+`windows-2022` 带的是 VS 2022 (17.14)，正好映射到 `'Visual Studio 17 2022'`。
+工作流里「打印工具链版本」那一步会用 `vswhere` 打出 VS 的 `displayName` 与版本号，
+将来镜像再漂移时从这一行就能看出问题。
+
+**退出条件**：Flutter 升到 **3.39.0+** 后（该版本已加入 VS 18 的映射）可以改回
+`windows-latest`；在那之前别动这一行。
+
 #### 手动触发时可调的参数
 
 | 参数 | 默认 | 说明 |
@@ -575,7 +658,10 @@ iOS 首次构建设置最慢（要下载 MPVKit 原生库，体积较大），�
 #### 为什么 Windows 不需要 setup-java
 
 Java 只有 Android 构建才需要。本项目的 Windows 桌面构建走 CMake + MSVC，
-`windows-latest` 镜像已预装 Visual Studio 2022（含「使用 C++ 的桌面开发」工作负载）。
+`windows-2022` 镜像已预装 **Visual Studio 2022**（含「使用 C++ 的桌面开发」工作负载）。
+
+> 注意别用 `windows-latest`：它现在是 VS 2026，而 Flutter 3.24.5 认不出来 ——
+> 原因见上面 [§4.9](#为什么这里是-windows-2022-而不是-windows-latest)。
 
 #### 想在本机出安装包
 
@@ -736,12 +822,14 @@ entitlements。有三类 entitlement 在 iOS 15 / A12+ 上被禁用，带上会*
 
 | 现象 | 排查方向 |
 |---|---|
-| 工作流排队失败「no matching runner」 | runner 标签失效。改用 `macos-15`（**别用 `macos-14`**，2026-11-02 起不再支持） |
+| 工作流排队失败「no matching runner」 | runner 标签失效。iOS 用 `macos-15`（**别用 `macos-14`**，2026-11-02 起不再支持）；Windows 用 `windows-2022`（**别用 `windows-latest`**，见下行） |
+| Windows 报 `Generator Visual Studio 16 2019 could not find any instance of Visual Studio.` | `windows-latest` 自 2026-06-15 起换成了 VS 2026，Flutter 3.24.5 认不出 VS 18 → 回落成 2019 的生成器。改回 `runs-on: windows-2022`。**设 `CMAKE_GENERATOR` 或在镜像上装 VS 2022 都没用** —— 原因见 [§4.9](#为什么这里是-windows-2022-而不是-windows-latest) |
 | 构建时报 `flutter create` 失败 | 云端脚手架生成步骤出错。检查 `--project-name movie_hub` 与 `--org` 是否合法（不能有连字符/中文）；这一步不需要仓库里预先存在 `ios/` |
 | 报 `ios/Podfile 文件不存在` 或 `pod install` 找不到 Podfile | 补丁脚本本应在缺失时自动生成（见 [§1.3](#13-ios-工程补丁同样在云端跑含补出-podfile)）。看「应用 iOS 工程补丁」步骤日志里 `Podfile：` 那段自检输出定位 |
 | `pod install` 报 `Platform :ios, '12.0'` 或部署版本冲突 | Podfile 用了 Flutter 默认模板、没走到我们的补丁。确认工作流里「应用 iOS 工程补丁」在 `pod install` **之前** |
 | `No such module 'Flutter'` | Flutter 版本 < 3.24.4 配 Xcode 16。把 `flutter-version` 改到 3.24.4+ |
 | `CocoaPods could not find compatible versions for pod "media_kit_libs_ios_video"` | 最低版本没抬到 13.0，或三处没改全。确认「应用 iOS 工程补丁」步骤没被跳过，并检查日志里是否出现 `post_install 结构非标准` 的 `[提示]` |
+| Xcode 报 `Cannot find type 'FlutterSceneLifecycleDelegate' in scope`（文件是 `volume_controller-x.y.z`） | `volume_controller` 被解析到了 **3.4.2+**，它用了 Flutter 3.24.5 还没有的 UIScene 协议。`pubspec.yaml` 里已锁 `media_kit_video: '>=1.2.4 <1.3.0'` + `dependency_overrides: volume_controller: '>=2.0.7 <3.0.0'`。若又冒出来，先确认这两条没被人删掉 —— 详见 [§2.7](#27-ios-编不过volume_controller-的版本陷阱) |
 | `ModuleCache.noindex/Session.modulevalidation` 不存在 | Xcode 15 写的模块缓存被 Xcode 16 读到。工作流每次都是干净环境，不会出现；本地出现就删 `~/Library/Developer/Xcode/DerivedData` |
 | 构建成功但 Artifact 为空 | `flutter build ios` 实际失败了但被吞。翻「构建 iOS（未签名）」那一步的完整日志 |
 | Release 里没有 IPA | tag 不是 `v` 开头（工作流用 `refs/tags/v` 判定） |

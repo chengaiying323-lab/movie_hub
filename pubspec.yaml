@@ -38,7 +38,15 @@ dependencies:
   # 由此带来两条硬约束：iOS 最低版本 13.0（Podfile 与 pbxproj 要同时改）、
   # 以及系统级画中画（PiP）不可用。详见 docs/BUILD_AND_RELEASE.md。
   media_kit: ^1.1.10
-  media_kit_video: ^1.2.4
+  # 刻意锁在 1.2.x（而不是 ^1.2.4），否则解析到的版本链是：
+  #   media_kit_video 1.3.1 → volume_controller ^3.0.2 → 3.4.4
+  # 而 volume_controller **3.4.2 起开始使用 iOS 的 UIScene 生命周期协议**
+  # （FlutterSceneLifecycleDelegate）。CI 里的 Flutter 3.24.5 还没有这个协议，
+  # 编译直接失败：Cannot find type 'FlutterSceneLifecycleDelegate' in scope。
+  # 更坑的是 3.4.2–3.4.4 在 pubspec 里**谎报** flutter: '>=3.0.0'，pub 因此
+  # 不会自动避开它们（3.5.0 才老实声明 >=3.38.0，所以 pub 也不选它）——
+  # 只能在这里手动挡住。1.2.x 依赖 volume_controller ^2.0.7，不含 UIScene 代码。
+  media_kit_video: '>=1.2.4 <1.3.0'
   media_kit_libs_video: ^1.0.4
 
   # ── 平台适配 ────────────────────────────────────────────
@@ -52,6 +60,18 @@ dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^4.0.0
+
+# ── 传递依赖兜底 ──────────────────────────────────────────────
+# volume_controller **不是**本项目的直接依赖，而是 media_kit_video 拖进来的
+# 传递依赖（media_kit_video 1.2.x → volume_controller ^2.0.7）。
+# 上面的 media_kit_video 上限已经把它挡在 2.x；这里再显式锁一道，
+# 是为了防「将来有别的包、或 media_kit_video 的某个新版本又把它拉进来」——
+# 一旦落到 3.4.2+，iOS 就会编不过（原因见上面 media_kit_video 处的注释）。
+#
+# 仓库里**没有提交 pubspec.lock**，CI 每次都是全新解析依赖，
+# 所以「靠 lockfile 记住版本」这条路是不通的，必须写在 pubspec.yaml 里。
+dependency_overrides:
+  volume_controller: '>=2.0.7 <3.0.0'
 
 flutter:
   uses-material-design: true
